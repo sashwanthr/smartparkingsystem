@@ -1229,7 +1229,7 @@ def show_setup_guide():
     """)
     
     # File checker section
-    st.subheader("🔍 File Status Checker")
+    st.subheader("File Status Checker")
     
     required_files = [
         "parking1.mp4",
@@ -1244,9 +1244,9 @@ def show_setup_guide():
     for i, file_name in enumerate(required_files):
         with col1 if i % 2 == 0 else col2:
             if os.path.exists(file_name):
-                st.success(f"✅ {file_name}")
+                st.success(f"Found: {file_name}")
             else:
-                st.error(f"❌ {file_name}")
+                st.error(f"Missing: {file_name}")
 
 # --- Sidebar Navigation ---
 with st.sidebar:
@@ -1299,5 +1299,5 @@ st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.8rem;'>
     🚗 Smart Parking Management System | Multi-Floor Detection with AI
 </div>
-
+""", unsafe_allow_html=True)data)} parking slots")
 
