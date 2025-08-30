@@ -571,38 +571,39 @@ class MultiFloorParkingDetector:
         
         return ground_result, first_floor_result
     
-    def download_video_if_needed(self, video_path, download_url=None):
-        """Download video file if it doesn't exist locally"""
+    def download_video_if_needed(self, video_path, file_id):
+        """Download video file from Google Drive if it doesn't exist locally"""
         if os.path.exists(video_path):
             return True
             
-        if download_url:
-            try:
-                import urllib.request
-                print(f"Downloading {video_path} from {download_url}...")
-                urllib.request.urlretrieve(download_url, video_path)
-                print(f"Downloaded {video_path} successfully")
-                return True
-            except Exception as e:
-                print(f"Error downloading {video_path}: {e}")
-                return False
-        return False
+        try:
+            import urllib.request
+            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            print(f"Downloading {video_path} from Google Drive...")
+            urllib.request.urlretrieve(download_url, video_path)
+            print(f"Downloaded {video_path} successfully")
+            return True
+        except Exception as e:
+            print(f"Error downloading {video_path}: {e}")
+            return False
     
     def start_detection(self):
-        """Start video detection"""
+        """Start video detection with automatic video download"""
         if self.is_running:
             return
             
-        # Try to download videos if they don't exist
-        # You can add your download URLs here
-        video_urls = {
-            'parking1.mp4': None,  # Add your Ground floor video URL here
-            'parking2.mp4': None   # Add your First floor video URL here
+        # Google Drive file IDs for your videos
+        video_files = {
+            'parking1.mp4': '1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE',  # Ground floor
+            'parking2.mp4': '14njmPC4b81mOV02orKslziMRr2WL-qAM'   # First floor
         }
         
-        for video_file, url in video_urls.items():
-            if not os.path.exists(video_file) and url:
-                self.download_video_if_needed(video_file, url)
+        # Download videos if they don't exist
+        for video_file, file_id in video_files.items():
+            if not os.path.exists(video_file):
+                if not self.download_video_if_needed(video_file, file_id):
+                    print(f"Failed to download {video_file}")
+                    return False
             
         self.cap_ground = cv2.VideoCapture(self.ground_video)
         self.cap_first = cv2.VideoCapture(self.first_floor_video)
@@ -672,6 +673,48 @@ class MultiFloorParkingDetector:
 
 # --- Page Functions ---
 
+def download_from_google_drive(file_id, destination):
+    """Download file from Google Drive using direct download URL"""
+    try:
+        import urllib.request
+        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        # Create progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def progress_hook(block_num, block_size, total_size):
+            if total_size > 0:
+                progress = min(1.0, (block_num * block_size) / total_size)
+                progress_bar.progress(progress)
+                status_text.text(f"Downloading... {progress*100:.1f}%")
+        
+        urllib.request.urlretrieve(download_url, destination, progress_hook)
+        progress_bar.progress(1.0)
+        status_text.text("Download complete!")
+        return True
+        
+    except Exception as e:
+        st.error(f"Download failed: {str(e)}")
+        return False
+
+def setup_parking_videos():
+    """Setup actual parking videos from Google Drive"""
+    video_files = {
+        'parking1.mp4': '1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE',  # Ground floor
+        'parking2.mp4': '14njmPC4b81mOV02orKslziMRr2WL-qAM'   # First floor
+    }
+    
+    for video_file, file_id in video_files.items():
+        if not os.path.exists(video_file):
+            st.info(f"Downloading {video_file}...")
+            if download_from_google_drive(file_id, video_file):
+                st.success(f"Successfully downloaded {video_file}")
+            else:
+                st.error(f"Failed to download {video_file}")
+                return False
+    return True
+
 def show_config_page():
     st.markdown("""
     <h1 class="main-header">
@@ -687,18 +730,49 @@ def show_config_page():
     with col1:
         st.write("**Ground Floor Video**")
         ground_video = st.text_input("Ground Floor Video Path", value="parking1.mp4", key="ground_video")
+        
+        # Video file status check with download option
         if os.path.exists(ground_video):
-            st.success(f"✅ Found: {ground_video}")
+            st.success(f"Found: {ground_video}")
+            # Show file size
+            file_size = os.path.getsize(ground_video) / (1024*1024)  # MB
+            st.info(f"File size: {file_size:.1f} MB")
         else:
-            st.error(f"❌ File not found: {ground_video}")
+            st.error(f"File not found: {ground_video}")
+            if st.button("Download Ground Floor Video", key="download_ground"):
+                if download_from_google_drive('1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE', 'parking1.mp4'):
+                    st.success("Download completed!")
+                    st.rerun()
         
     with col2:
         st.write("**First Floor Video**")
         first_video = st.text_input("First Floor Video Path", value="parking2.mp4", key="first_video")
+        
         if os.path.exists(first_video):
-            st.success(f"✅ Found: {first_video}")
+            st.success(f"Found: {first_video}")
+            # Show file size  
+            file_size = os.path.getsize(first_video) / (1024*1024)  # MB
+            st.info(f"File size: {file_size:.1f} MB")
         else:
-            st.error(f"❌ File not found: {first_video}")
+            st.error(f"File not found: {first_video}")
+            if st.button("Download First Floor Video", key="download_first"):
+                if download_from_google_drive('14njmPC4b81mOV02orKslziMRr2WL-qAM', 'parking2.mp4'):
+                    st.success("Download completed!")
+                    st.rerun()
+                    
+    # Download all videos at once
+    col_download1, col_download2, col_download3 = st.columns(3)
+    with col_download2:
+        if st.button("Download All Videos", use_container_width=True):
+            with st.spinner("Downloading videos..."):
+                success = True
+                if not os.path.exists('parking1.mp4'):
+                    success &= download_from_google_drive('1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE', 'parking1.mp4')
+                if not os.path.exists('parking2.mp4'):
+                    success &= download_from_google_drive('14njmPC4b81mOV02orKslziMRr2WL-qAM', 'parking2.mp4')
+                if success:
+                    st.success("All videos downloaded successfully!")
+                    st.rerun()
 
     st.subheader("📍 Slot Configuration")
     
@@ -1075,106 +1149,83 @@ def show_setup_guide():
     """, unsafe_allow_html=True)
     
     st.markdown("""
-    ## 🚀 Complete Setup Guide for Multi-Floor Parking Detection
+    ## Complete Setup Guide for Multi-Floor Parking Detection
     
-    ### 📁 File Structure
-    Your project directory should be organized exactly as follows:
+    ### File Structure (GitHub Repository)
+    Since GitHub has a 25MB file limit, store only these files in your repository:
     
     ```
-    /your_project_folder/
+    /your-github-repo/
     ├── app.py                    # This Streamlit dashboard
-    ├── parking1.mp4             # Ground floor video
-    ├── parking2.mp4             # First floor video  
     ├── slots1.json              # Ground floor parking slots
     ├── slots2.json              # First floor parking slots
-    └── yolov8n.pt               # YOLO model weights
+    ├── requirements.txt         # Python dependencies
+    └── README.md                # Setup instructions
     ```
     
-    ### 🔧 Installation Steps
+    ### Video Files (External Storage)
+    Your video files are hosted on Google Drive:
+    - **Ground Floor:** https://drive.google.com/file/d/1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE/view
+    - **First Floor:** https://drive.google.com/file/d/14njmPC4b81mOV02orKslziMRr2WL-qAM/view
     
-    **1. Install Required Dependencies:**
+    The app will automatically download these videos when needed.
+    
+    ### Installation Steps
+    
+    **1. Create requirements.txt:**
+    ```txt
+    streamlit>=1.28.0
+    ultralytics>=8.0.0
+    opencv-python>=4.8.0
+    pandas>=2.0.0
+    plotly>=5.15.0
+    numpy>=1.24.0
+    ```
+    
+    **2. Deploy to Streamlit Cloud:**
+    1. Push code to GitHub (without video files)
+    2. Connect repository to Streamlit Cloud
+    3. Deploy directly from GitHub
+    4. Videos download automatically on first use
+    
+    **3. Local Development:**
     ```bash
-    pip install streamlit ultralytics opencv-python pandas plotly numpy
-    ```
-    
-    **2. Download YOLO Model:**
-    The YOLOv8 model will be automatically downloaded on first run, or you can download it manually:
-    ```python
-    from ultralytics import YOLO
-    model = YOLO('yolov8n.pt')  # Downloads automatically
-    ```
-    
-    ### 📄 JSON Slot Format
-    Your `slots1.json` and `slots2.json` should contain polygon coordinates for each parking slot:
-    
-    ```json
-    [
-        [[x1, y1], [x2, y2], [x3, y3], [x4, y4]],
-        [[x1, y1], [x2, y2], [x3, y3], [x4, y4]],
-        ...
-    ]
-    ```
-    
-    Each inner array represents one parking slot with 4 corner coordinates.
-    
-    ### 🎥 Video Requirements
-    - **Format:** MP4, AVI, or other OpenCV-supported formats
-    - **Resolution:** Any resolution (system auto-adjusts)
-    - **FPS:** Any frame rate (system detects automatically)
-    - **Content:** Clear view of parking areas with defined slots
-    
-    ### 🚀 Running the Application
-    
-    **1. Start the Dashboard:**
-    ```bash
+    git clone your-repo-url
+    cd your-repo
+    pip install -r requirements.txt
     streamlit run app.py
     ```
     
-    **2. Configure System:**
-    - Verify all file paths are correct
-    - Adjust confidence threshold (0.5 recommended)
-    - Set transition time (10 seconds recommended)
+    ### Deployment Workflow
     
-    **3. Start Detection:**
-    - Click "🚀 Start Detection" 
-    - Navigate to "Live Dashboard" to see real-time results
-    - Use "Analytics" for historical data and trends
+    **For Users Worldwide:**
+    1. User opens your Streamlit Cloud URL
+    2. Clicks "Download All Videos" (one-time setup)
+    3. Videos download from Google Drive automatically
+    4. Clicks "Start Detection" to begin real-time analysis
+    5. System processes your actual parking lot videos with AI detection
     
-    ### 🌐 Deployment Options
+    ### Alternative Deployment Methods
     
-    **Option 1: Streamlit Cloud (Recommended)**
-    1. Push your code to GitHub with all files
-    2. Connect to Streamlit Cloud
-    3. Deploy directly from repository
-    4. Share the public URL with users worldwide
-    
-    **Option 2: Local Server**
-    1. Run `streamlit run app.py --server.port 8501`
-    2. Access via `http://your-ip:8501`
-    3. Configure firewall for external access
-    
-    **Option 3: Docker Deployment**
+    **Option 1: Docker with External Storage**
     ```dockerfile
     FROM python:3.9-slim
     WORKDIR /app
     COPY . .
     RUN pip install -r requirements.txt
     EXPOSE 8501
-    CMD ["streamlit", "run", "app.py"]
+    CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     ```
     
-    ### 🔧 Troubleshooting
+    **Option 2: AWS/GCP with S3/Cloud Storage**
+    - Upload videos to S3/Google Cloud Storage
+    - Modify app to download from cloud storage
+    - Deploy container to cloud platform
     
-    **Common Issues:**
-    - **"File not found":** Ensure all files are in the correct directory
-    - **"Model loading error":** Check internet connection for YOLO download
-    - **"Video error":** Verify video format and codec compatibility
-    - **"Slow detection":** Reduce video resolution or increase confidence threshold
-    
-    **Performance Tips:**
-    - Use H.264 encoded videos for better performance
-    - Keep video resolution under 1920x1080 for real-time processing
-    - Adjust confidence threshold based on your specific use case
+    **Option 3: CDN Hosting**
+    - Host videos on CDN (CloudFlare, AWS CloudFront)
+    - Update download URLs in the app
+    - Faster global access for users
     """)
     
     # File checker section
