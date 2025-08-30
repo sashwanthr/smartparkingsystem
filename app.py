@@ -571,10 +571,38 @@ class MultiFloorParkingDetector:
         
         return ground_result, first_floor_result
     
+    def download_video_if_needed(self, video_path, download_url=None):
+        """Download video file if it doesn't exist locally"""
+        if os.path.exists(video_path):
+            return True
+            
+        if download_url:
+            try:
+                import urllib.request
+                print(f"Downloading {video_path} from {download_url}...")
+                urllib.request.urlretrieve(download_url, video_path)
+                print(f"Downloaded {video_path} successfully")
+                return True
+            except Exception as e:
+                print(f"Error downloading {video_path}: {e}")
+                return False
+        return False
+    
     def start_detection(self):
         """Start video detection"""
         if self.is_running:
             return
+            
+        # Try to download videos if they don't exist
+        # You can add your download URLs here
+        video_urls = {
+            'parking1.mp4': None,  # Add your Ground floor video URL here
+            'parking2.mp4': None   # Add your First floor video URL here
+        }
+        
+        for video_file, url in video_urls.items():
+            if not os.path.exists(video_file) and url:
+                self.download_video_if_needed(video_file, url)
             
         self.cap_ground = cv2.VideoCapture(self.ground_video)
         self.cap_first = cv2.VideoCapture(self.first_floor_video)
@@ -1221,19 +1249,3 @@ st.markdown("""
     🚗 Smart Parking Management System | Multi-Floor Detection with AI
 </div>
 """, unsafe_allow_html=True)data)} parking slots")
-            except:
-                st.warning("⚠️ Could not read slot data")
-        else:
-            st.error(f"❌ File not found: {ground_slots}")
-        
-    with col4:
-        st.write("**First Floor Slots**")
-        first_slots = st.text_input("First Floor Slots JSON", value="slots2.json", key="first_slots")
-        if os.path.exists(first_slots):
-            st.success(f"✅ Found: {first_slots}")
-            # Show slot count
-            try:
-                with open(first_slots, 'r') as f:
-                    slots_data = json.load(f)
-                st.info(f"📊 Loaded {len(slots_
-
