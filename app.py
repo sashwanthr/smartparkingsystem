@@ -604,25 +604,62 @@ class MultiFloorParkingDetector:
         return ground_result, first_floor_result
     
     def download_video_if_needed(self, video_path, file_id):
-        """Download video file from Google Drive if it doesn't exist locally"""
+        """Download large video files from Google Drive if they don't exist locally"""
         if os.path.exists(video_path):
-            return True
-            
+            file_size = os.path.getsize(video_path)
+            if file_size > 1024:  # File exists and is not empty
+                return True
+            else:
+                # Remove corrupted file
+                os.remove(video_path)
+        
         try:
             import urllib.request
-            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            import urllib.parse
+            import re
+            
             print(f"Downloading {video_path} from Google Drive...")
+            
+            # Handle large files that require confirmation
+            session_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            
+            # First request to get the confirmation token for large files
+            response = urllib.request.urlopen(session_url)
+            content = response.read().decode('utf-8')
+            
+            # Look for the confirmation token
+            confirm_token = None
+            if 'confirm=' in content:
+                token_match = re.search(r'confirm=([a-zA-Z0-9_-]+)', content)
+                if token_match:
+                    confirm_token = token_match.group(1)
+            
+            # Download URL with confirmation token if needed
+            if confirm_token:
+                download_url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+                print("Large file detected, using confirmation token...")
+            else:
+                download_url = session_url
+            
             urllib.request.urlretrieve(download_url, video_path)
-            print(f"Downloaded {video_path} successfully")
-            return True
+            
+            # Verify download
+            if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
+                file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+                print(f"Downloaded {video_path} successfully ({file_size_mb:.1f}MB)")
+                return True
+            else:
+                print(f"Download failed: {video_path} is too small or corrupted")
+                return False
+                
         except Exception as e:
             print(f"Error downloading {video_path}: {e}")
             return False
     
     def start_detection(self):
-        """Start video detection with automatic video download"""
+        """Start video detection with automatic video download and better error handling"""
         if self.is_running:
-            return
+            return True
             
         # Google Drive file IDs for your videos
         video_files = {
@@ -630,30 +667,70 @@ class MultiFloorParkingDetector:
             'parking2.mp4': '14njmPC4b81mOV02orKslziMRr2WL-qAM'   # First floor
         }
         
-        # Download videos if they don't exist
+        # Download and verify videos if they don't exist or are corrupted
         for video_file, file_id in video_files.items():
-            if not os.path.exists(video_file):
+            if not os.path.exists(video_file) or os.path.getsize(video_file) <= 1024:
+                print(f"Downloading {video_file}...")
+                if os.path.exists(video_file):
+                    os.remove(video_file)  # Remove corrupted file
                 if not self.download_video_if_needed(video_file, file_id):
                     print(f"Failed to download {video_file}")
                     return False
-            
-        self.cap_ground = cv2.VideoCapture(self.ground_video)
-        self.cap_first = cv2.VideoCapture(self.first_floor_video)
         
-        if not self.cap_ground.isOpened() or not self.cap_first.isOpened():
-            print("Error: Cannot open video files!")
+        # Verify files exist and have reasonable size
+        if not os.path.exists(self.ground_video) or os.path.getsize(self.ground_video) <= 1024:
+            print(f"Ground floor video {self.ground_video} is missing or corrupted")
+            return False
+            
+        if not os.path.exists(self.first_floor_video) or os.path.getsize(self.first_floor_video) <= 1024:
+            print(f"First floor video {self.first_floor_video} is missing or corrupted")
             return False
         
-        # Get FPS from video
-        fps = int(self.cap_ground.get(cv2.CAP_PROP_FPS)) or 30
-        self.detection_params['fps'] = fps
-        self.transition_frames = self.detection_params['transition_time_seconds'] * fps
-        
-        self.is_running = True
-        self.frame_count = 0
-        
-        print(f"Detection started at {fps} FPS")
-        return True
+        try:
+            self.cap_ground = cv2.VideoCapture(self.ground_video)
+            self.cap_first = cv2.VideoCapture(self.first_floor_video)
+            
+            if not self.cap_ground.isOpened():
+                print(f"Error: Cannot open ground floor video {self.ground_video}")
+                return False
+                
+            if not self.cap_first.isOpened():
+                print(f"Error: Cannot open first floor video {self.first_floor_video}")
+                self.cap_ground.release()
+                return False
+            
+            # Test read a frame to ensure videos are readable
+            ret1, _ = self.cap_ground.read()
+            ret2, _ = self.cap_first.read()
+            
+            if not ret1 or not ret2:
+                print("Error: Cannot read frames from video files")
+                self.cap_ground.release()
+                self.cap_first.release()
+                return False
+            
+            # Reset to beginning
+            self.cap_ground.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self.cap_first.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            
+            # Get FPS from video
+            fps = int(self.cap_ground.get(cv2.CAP_PROP_FPS)) or 30
+            self.detection_params['fps'] = fps
+            self.transition_frames = self.detection_params['transition_time_seconds'] * fps
+            
+            self.is_running = True
+            self.frame_count = 0
+            
+            print(f"Detection started successfully at {fps} FPS")
+            return True
+            
+        except Exception as e:
+            print(f"Error starting detection: {e}")
+            if hasattr(self, 'cap_ground') and self.cap_ground:
+                self.cap_ground.release()
+            if hasattr(self, 'cap_first') and self.cap_first:
+                self.cap_first.release()
+            return False
     
     def stop_detection(self):
         """Stop video detection"""
@@ -706,26 +783,63 @@ class MultiFloorParkingDetector:
 # --- Page Functions ---
 
 def download_from_google_drive(file_id, destination):
-    """Download file from Google Drive using direct download URL"""
+    """Download large files from Google Drive with proper handling"""
     try:
         import urllib.request
-        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        import urllib.parse
+        import re
         
-        # Create progress bar
+        # For large files, Google Drive requires a confirmation token
+        session_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
+        status_text.text("Initiating download...")
         
+        # First request to get the confirmation token for large files
+        response = urllib.request.urlopen(session_url)
+        content = response.read().decode('utf-8')
+        
+        # Look for the confirmation token
+        confirm_token = None
+        if 'confirm=' in content:
+            # Extract confirmation token using regex
+            token_match = re.search(r'confirm=([a-zA-Z0-9_-]+)', content)
+            if token_match:
+                confirm_token = token_match.group(1)
+        
+        # Download URL with confirmation token if needed
+        if confirm_token:
+            download_url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+            status_text.text("Large file detected, processing...")
+        else:
+            download_url = session_url
+        
+        # Download with progress tracking
         def progress_hook(block_num, block_size, total_size):
             if total_size > 0:
                 progress = min(1.0, (block_num * block_size) / total_size)
                 progress_bar.progress(progress)
-                status_text.text(f"Downloading... {progress*100:.1f}%")
+                downloaded_mb = (block_num * block_size) / (1024 * 1024)
+                total_mb = total_size / (1024 * 1024)
+                status_text.text(f"Downloading... {progress*100:.1f}% ({downloaded_mb:.1f}MB / {total_mb:.1f}MB)")
+            else:
+                # If total size is unknown, show downloaded amount
+                downloaded_mb = (block_num * block_size) / (1024 * 1024)
+                status_text.text(f"Downloading... {downloaded_mb:.1f}MB downloaded")
         
         urllib.request.urlretrieve(download_url, destination, progress_hook)
-        progress_bar.progress(1.0)
-        status_text.text("Download complete!")
-        return True
         
+        # Verify file was downloaded properly
+        if os.path.exists(destination) and os.path.getsize(destination) > 1024:  # At least 1KB
+            file_size_mb = os.path.getsize(destination) / (1024 * 1024)
+            progress_bar.progress(1.0)
+            status_text.text(f"Download complete! File size: {file_size_mb:.1f}MB")
+            return True
+        else:
+            st.error("Download failed: File is too small or corrupted")
+            return False
+            
     except Exception as e:
         st.error(f"Download failed: {str(e)}")
         return False
@@ -765,10 +879,18 @@ def show_config_page():
         
         # Video file status check with download option
         if os.path.exists(ground_video):
-            st.success(f"Found: {ground_video}")
-            # Show file size
             file_size = os.path.getsize(ground_video) / (1024*1024)  # MB
-            st.info(f"File size: {file_size:.1f} MB")
+            if file_size > 1.0:  # Valid file size
+                st.success(f"Found: {ground_video}")
+                st.info(f"File size: {file_size:.1f} MB")
+            else:
+                st.error(f"File corrupted (too small): {ground_video}")
+                if st.button("Re-download Ground Floor Video", key="redownload_ground"):
+                    if os.path.exists(ground_video):
+                        os.remove(ground_video)  # Remove corrupted file
+                    if download_from_google_drive('1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE', 'parking1.mp4'):
+                        st.success("Download completed!")
+                        st.rerun()
         else:
             st.error(f"File not found: {ground_video}")
             if st.button("Download Ground Floor Video", key="download_ground"):
@@ -781,10 +903,18 @@ def show_config_page():
         first_video = st.text_input("First Floor Video Path", value="parking2.mp4", key="first_video")
         
         if os.path.exists(first_video):
-            st.success(f"Found: {first_video}")
-            # Show file size  
             file_size = os.path.getsize(first_video) / (1024*1024)  # MB
-            st.info(f"File size: {file_size:.1f} MB")
+            if file_size > 1.0:  # Valid file size
+                st.success(f"Found: {first_video}")
+                st.info(f"File size: {file_size:.1f} MB")
+            else:
+                st.error(f"File corrupted (too small): {first_video}")
+                if st.button("Re-download First Floor Video", key="redownload_first"):
+                    if os.path.exists(first_video):
+                        os.remove(first_video)  # Remove corrupted file
+                    if download_from_google_drive('14njmPC4b81mOV02orKslziMRr2WL-qAM', 'parking2.mp4'):
+                        st.success("Download completed!")
+                        st.rerun()
         else:
             st.error(f"File not found: {first_video}")
             if st.button("Download First Floor Video", key="download_first"):
@@ -798,13 +928,26 @@ def show_config_page():
         if st.button("Download All Videos", use_container_width=True):
             with st.spinner("Downloading videos..."):
                 success = True
-                if not os.path.exists('parking1.mp4'):
+                
+                # Download ground floor video if needed
+                if not os.path.exists('parking1.mp4') or os.path.getsize('parking1.mp4') <= 1024:
+                    st.info("Downloading ground floor video...")
+                    if os.path.exists('parking1.mp4'):
+                        os.remove('parking1.mp4')  # Remove corrupted file
                     success &= download_from_google_drive('1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE', 'parking1.mp4')
-                if not os.path.exists('parking2.mp4'):
+                
+                # Download first floor video if needed  
+                if not os.path.exists('parking2.mp4') or os.path.getsize('parking2.mp4') <= 1024:
+                    st.info("Downloading first floor video...")
+                    if os.path.exists('parking2.mp4'):
+                        os.remove('parking2.mp4')  # Remove corrupted file
                     success &= download_from_google_drive('14njmPC4b81mOV02orKslziMRr2WL-qAM', 'parking2.mp4')
+                    
                 if success:
                     st.success("All videos downloaded successfully!")
                     st.rerun()
+                else:
+                    st.error("Some downloads failed. Please try downloading individually.")
 
     st.subheader("Slot Configuration")
     
@@ -855,43 +998,64 @@ def show_config_page():
         
     st.subheader("System Control")
     
-    # Check if all files exist
-    files_exist = all([
-        os.path.exists(ground_video),
-        os.path.exists(first_video),
-        os.path.exists(ground_slots),
-        os.path.exists(first_slots),
-        os.path.exists(model_path)
-    ])
+    # Check if all files exist and are valid
+    ground_exists = os.path.exists(ground_video) and os.path.getsize(ground_video) > 1024
+    first_exists = os.path.exists(first_video) and os.path.getsize(first_video) > 1024
+    slots1_exists = os.path.exists(ground_slots)
+    slots2_exists = os.path.exists(first_slots)
+    model_exists = os.path.exists(model_path)
+    
+    files_exist = all([ground_exists, first_exists, slots1_exists, slots2_exists, model_exists])
+    
+    # Display file status summary
+    if not files_exist:
+        st.error("Missing or corrupted files detected:")
+        if not ground_exists:
+            st.error(f"❌ Ground floor video: {ground_video}")
+        if not first_exists:
+            st.error(f"❌ First floor video: {first_video}")
+        if not slots1_exists:
+            st.error(f"❌ Ground floor slots: {ground_slots}")
+        if not slots2_exists:
+            st.error(f"❌ First floor slots: {first_slots}")
+        if not model_exists:
+            st.error(f"❌ YOLO model: {model_path}")
+    else:
+        st.success("All required files are ready!")
     
     col7, col8, col9 = st.columns(3)
     with col7:
-        if st.button("Start Detection", use_container_width=True, disabled=not files_exist):
+        start_button = st.button("Start Detection", use_container_width=True, disabled=not files_exist)
+        if start_button:
             if files_exist:
                 try:
-                    # Initialize detector with user settings
-                    st.session_state.detector = MultiFloorParkingDetector(
-                        model_path=model_path,
-                        ground_slots_json=ground_slots,
-                        first_floor_slots_json=first_slots,
-                        ground_video=ground_video,
-                        first_floor_video=first_video,
-                        confidence_threshold=confidence
-                    )
-                    
-                    # Update transition time
-                    st.session_state.detector.detection_params['transition_time_seconds'] = transition_time
-                    
-                    if st.session_state.detector.start_detection():
-                        st.session_state.is_running = True
-                        st.session_state.page = 'Live Dashboard'
-                        st.rerun()
-                    else:
-                        st.error("Failed to start detection!")
+                    with st.spinner("Initializing detection system..."):
+                        # Initialize detector with user settings
+                        st.session_state.detector = MultiFloorParkingDetector(
+                            model_path=model_path,
+                            ground_slots_json=ground_slots,
+                            first_floor_slots_json=first_slots,
+                            ground_video=ground_video,
+                            first_floor_video=first_video,
+                            confidence_threshold=confidence
+                        )
+                        
+                        # Update transition time
+                        st.session_state.detector.detection_params['transition_time_seconds'] = transition_time
+                        
+                        if st.session_state.detector.start_detection():
+                            st.session_state.is_running = True
+                            st.session_state.page = 'Live Dashboard'
+                            st.success("Detection started successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to start detection! Check video files.")
+                            
                 except Exception as e:
                     st.error(f"Error initializing detector: {str(e)}")
+                    st.error("Please check that all files are valid and accessible.")
             else:
-                st.error("Please ensure all files exist before starting detection!")
+                st.error("Cannot start detection - missing required files!")
     
     with col8:
         if st.button("Stop Detection", use_container_width=True):
@@ -899,6 +1063,7 @@ def show_config_page():
                 st.session_state.detector.stop_detection()
             st.session_state.is_running = False
             st.session_state.page = 'Configuration'
+            st.success("Detection stopped")
             st.rerun()
     
     with col9:
@@ -908,6 +1073,7 @@ def show_config_page():
             st.session_state.is_running = False
             st.session_state.detector = None
             st.session_state.page = 'Configuration'
+            st.success("System reset")
             st.rerun()
     
     if not files_exist:
@@ -1236,91 +1402,3 @@ def show_setup_guide():
     libxrender-dev
     libgomp1
     ```
-    
-    **3. Deploy to Streamlit Cloud:**
-    1. Push code to GitHub (without video files)
-    2. Connect repository to Streamlit Cloud
-    3. Deploy directly from GitHub
-    4. Videos download automatically on first use
-    
-    **4. Local Development:**
-    ```bash
-    git clone your-repo-url
-    cd your-repo
-    pip install -r requirements.txt
-    streamlit run app.py
-    ```
-    """)
-    
-    # File checker section
-    st.subheader("File Status Checker")
-    
-    required_files = [
-        "parking1.mp4",
-        "parking2.mp4", 
-        "slots1.json",
-        "slots2.json",
-        "yolov8n.pt"
-    ]
-    
-    col1, col2 = st.columns(2)
-    
-    for i, file_name in enumerate(required_files):
-        with col1 if i % 2 == 0 else col2:
-            if os.path.exists(file_name):
-                st.success(f"Found: {file_name}")
-            else:
-                st.error(f"Missing: {file_name}")
-
-# --- Sidebar Navigation ---
-with st.sidebar:
-    st.markdown("## Navigation")
-    
-    if st.session_state.is_running:
-        page_options = ["Live Dashboard", "Analytics", "Detailed Slots", "Setup Guide", "Configuration"]
-    else:
-        page_options = ["Configuration", "Setup Guide"]
-    
-    selected_page = st.radio("Go to:", page_options)
-    st.session_state.page = selected_page
-    
-    # System status
-    st.markdown("---")
-    st.markdown("## System Status")
-    if st.session_state.is_running:
-        st.success("Detection Running")
-        if st.session_state.detector:
-            stats = st.session_state.detector.get_parking_statistics()
-            st.metric("Frame", st.session_state.detector.frame_count)
-            st.metric("Total Occupancy", f"{(stats['total']['occupied']/stats['total']['total']*100):.1f}%")
-    else:
-        st.error("Detection Stopped")
-    
-    # Emergency stop
-    st.markdown("---")
-    if st.button("Emergency Stop", use_container_width=True, key="emergency_stop"):
-        if st.session_state.detector:
-            st.session_state.detector.stop_detection()
-        st.session_state.is_running = False
-        st.session_state.page = 'Configuration'
-        st.rerun()
-
-# --- Main Page Router ---
-if st.session_state.page == "Configuration":
-    show_config_page()
-elif st.session_state.page == "Live Dashboard":
-    show_live_dashboard()
-elif st.session_state.page == "Analytics":
-    show_analytics_page()
-elif st.session_state.page == "Detailed Slots":
-    show_detailed_slots()
-elif st.session_state.page == "Setup Guide":
-    show_setup_guide()
-
-# --- Footer ---
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: gray; font-size: 0.8rem;'>
-    Smart Parking Management System | Multi-Floor Detection with AI
-</div>
-""", unsafe_allow_html=True)
