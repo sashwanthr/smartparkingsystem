@@ -790,6 +790,21 @@ def show_config_page():
             except:
                 st.warning("⚠️ Could not read slot data")
         else:
+            st.error(f"❌ File not found: {ground_slots}")
+            
+    with col4:
+        st.write("**First Floor Slots**")
+        first_slots = st.text_input("First Floor Slots JSON", value="slots2.json", key="first_slots")
+        if os.path.exists(first_slots):
+            st.success(f"✅ Found: {first_slots}")
+            # Show slot count
+            try:
+                with open(first_slots, 'r') as f:
+                    slots_data = json.load(f)
+                st.info(f"📊 Loaded {len(slots_data)} parking slots")
+            except:
+                st.warning("⚠️ Could not read slot data")
+        else:
             st.error(f"❌ File not found: {first_slots}")
 
     st.subheader("🤖 AI Model Settings")
@@ -1299,5 +1314,4 @@ st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.8rem;'>
     🚗 Smart Parking Management System | Multi-Floor Detection with AI
 </div>
-""", unsafe_allow_html=True)data)} parking slots")
-
+""", unsafe_allow_html=True)
