@@ -1,712 +1,1221 @@
 import streamlit as st
-import sys
-import subprocess
+import cv2
+import numpy as np
+import json
+import threading
+import queue
+import time
+from datetime import datetime, timedelta
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+import os
+from pathlib import Path
+import tempfile
+import io
+from typing import Dict, List, Tuple, Optional
+import logging
 
-# Handle OpenCV import with fallback
-try:
-    import cv2
-except ImportError:
-    st.error("OpenCV is not installed. Installing now...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
-        import cv2
-        st.success("OpenCV installed successfully!")
-    except Exception as e:
-        st.error(f"Failed to install OpenCV: {e}")
-        st.stop()
-
-# Now import other dependencies
-try:
-    import json
-    import numpy as np
-    import pandas as pd
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    import time
-    import random
-    from datetime import datetime, timedelta
-    import threading
-    import queue
-    from pathlib import Path
-    import tempfile
-    import os
-    from typing import Dict, List, Tuple, Optional
-    import base64
-    import subprocess
-    import shutil
-    from collections import defaultdict
-except ImportError as e:
-    st.error(f"Missing dependency: {e}")
-    st.stop()
-
-# Handle YOLO import
-try:
-    from ultralytics import YOLO
-except ImportError:
-    st.error("YOLO (ultralytics) is not installed. Installing now...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "ultralytics"])
-        from ultralytics import YOLO
-        st.success("YOLO installed successfully!")
-    except Exception as e:
-        st.error(f"Failed to install YOLO: {e}")
-        st.stop()
-
-# Page configuration
+# Set page config first
 st.set_page_config(
-    page_title="Smart Parking Management System",
+    page_title="Multi-Floor Parking Detection System",
     page_icon="🚗",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS for professional styling
 st.markdown("""
 <style>
     .main-header {
-        text-align: center;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        color: white;
+        background: linear-gradient(90deg, #1e3c72 0%, #2a5298 100%);
         padding: 1rem;
         border-radius: 10px;
         margin-bottom: 2rem;
+        text-align: center;
+        color: white;
     }
-    .metric-card {
+    
+    .status-card {
         background: white;
         padding: 1rem;
-        border-radius: 10px;
+        border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        border-left: 4px solid #667eea;
-        padding-left: 1rem;
+        border-left: 4px solid #1e3c72;
+        margin-bottom: 1rem;
     }
-    .status-free {
-        color: green;
-        font-weight: bold;
-    }
-    .status-occupied {
-        color: red;
-        font-weight: bold;
-    }
-    .status-transition {
-        color: orange;
-        font-weight: bold;
-    }
-    .stButton>button {
-        background-color: #4CAF50;
+    
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 8px;
         color: white;
-        padding: 10px 24px;
+        text-align: center;
+        margin: 0.5rem;
+    }
+    
+    .success-box {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .warning-box {
+        background-color: #fff3cd;
+        border: 1px solid #ffeaa7;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .error-box {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .stButton > button {
+        background: linear-gradient(90deg, #1e3c72 0%, #2a5298 100%);
+        color: white;
         border: none;
         border-radius: 8px;
-        cursor: pointer;
-        font-size: 16px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        transition: all 0.3s ease;
     }
-    .emergency-stop {
-        background-color: #f44336 !important;
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
+    
+    .sidebar-status {
+        background: #f0f2f6;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+    }
+    
+    .video-container {
+        border: 2px solid #1e3c72;
+        border-radius: 8px;
+        padding: 0.5rem;
+        background: white;
+    }
+    
+    .slot-free { color: #28a745; font-weight: bold; }
+    .slot-occupied { color: #dc3545; font-weight: bold; }
+    .slot-transition { color: #fd7e14; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# Session state initialization
-if 'page' not in st.session_state:
-    st.session_state.page = 'Configuration'
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'detector' not in st.session_state:
-    st.session_state.detector = None
-if 'detection_thread' not in st.session_state:
-    st.session_state.detection_thread = None
+# Initialize session state
+def initialize_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        'detection_active': False,
+        'ground_floor_slots': {},
+        'first_floor_slots': {},
+        'detection_history': [],
+        'video_threads': {},
+        'frame_queues': {},
+        'stop_detection': False,
+        'total_slots': 0,
+        'free_slots': 0,
+        'occupied_slots': 0,
+        'transition_slots': 0,
+        'last_update': datetime.now(),
+        'config': {
+            'confidence_threshold': 0.5,
+            'transition_time': 10,
+            'ground_floor_video': 'parking1.mp4',
+            'first_floor_video': 'parking2.mp4',
+            'ground_floor_slots': 'slots1.json',
+            'first_floor_slots': 'slots2.json'
+        }
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+class MockYOLODetector:
+    """Mock YOLO detector for demonstration purposes"""
+    
+    def __init__(self, confidence_threshold=0.5):
+        self.confidence_threshold = confidence_threshold
+        self.vehicle_classes = [1, 2, 3, 5, 7]  # bike, car, motorcycle, bus, truck
+        
+    def detect(self, frame):
+        """Mock detection that returns random detections"""
+        height, width = frame.shape[:2]
+        detections = []
+        
+        # Generate 2-5 random detections
+        num_detections = np.random.randint(2, 6)
+        
+        for _ in range(num_detections):
+            x1 = np.random.randint(0, width//2)
+            y1 = np.random.randint(0, height//2)
+            x2 = x1 + np.random.randint(50, 150)
+            y2 = y1 + np.random.randint(30, 100)
+            
+            detection = {
+                'bbox': [x1, y1, x2, y2],
+                'confidence': np.random.uniform(0.3, 0.95),
+                'class': np.random.choice(self.vehicle_classes)
+            }
+            detections.append(detection)
+        
+        return detections
 
 class MultiFloorParkingDetector:
-    def __init__(self, model_path='yolov8n.pt', 
-                 ground_slots_json='slots1.json', 
-                 first_floor_slots_json='slots2.json',
-                 ground_video='parking1.mp4',
-                 first_floor_video='parking2.mp4',
-                 confidence_threshold=0.5):
-        """Initialize the multi-floor parking detector with transition states"""
-        print("Loading YOLO model...")
-        self.model = YOLO(model_path)
-        
-        # Video paths
-        self.ground_video = ground_video
-        self.first_floor_video = first_floor_video
-        
-        # Load parking slots for both floors
-        print(f"Loading ground floor slots from {ground_slots_json}...")
-        self.ground_floor_slots = self.load_parking_slots(ground_slots_json, floor_id="Ground")
-        
-        print(f"Loading first floor slots from {first_floor_slots_json}...")
-        self.first_floor_slots = self.load_parking_slots(first_floor_slots_json, floor_id="1st Floor")
-        
-        # All slots combined for easy processing
-        self.all_slots = self.ground_floor_slots + self.first_floor_slots
-        
-        # Enhanced parameters with transition states
-        self.detection_params = {
-            'conf_threshold': confidence_threshold,
-            'iou_threshold': 0.45,
-            'overlap_threshold': 0.15,
-            'min_overlap_for_occupation': 0.25,
-            'min_car_area': 2000,
-            'stability_frames': 2,
-            'transition_time_seconds': 10,
-            'fps': 24,
-        }
-        
-        # Transition time in frames
-        self.transition_frames = self.detection_params['transition_time_seconds'] * self.detection_params['fps']
-        
-        # Enhanced tracking with transition states
-        self.slot_history = defaultdict(list)
-        self.frame_count = 0
-        self.is_running = False
-        self.processing_queue = queue.Queue(maxsize=2)
-        
-        # Video captures
-        self.cap_ground = None
-        self.cap_first = None
-        
-        # Colors for visualization
-        self.colors = {
-            'free': (0, 255, 0),           # Green
-            'occupied': (0, 0, 255),       # Red
-            'transition': (0, 165, 255),   # Orange (BGR format)
-            'uncertain': (0, 255, 255),    # Yellow
-            'car_box': (255, 255, 0),      # Cyan for cars
-            'text_bg': (0, 0, 0),          # Black background
-            'text': (255, 255, 255),       # White text
-        }
-        
-        print(f"Multi-floor system initialized:")
-        print(f"Ground floor slots: {len(self.ground_floor_slots)}")
-        print(f"First floor slots: {len(self.first_floor_slots)}")
-        print(f"Transition time: {self.detection_params['transition_time_seconds']} seconds")
+    """Main parking detection class"""
     
-    def load_parking_slots(self, json_path, floor_id):
-        """Load and validate parking slot polygons for a specific floor"""
+    def __init__(self):
+        self.detector = MockYOLODetector()
+        self.slots = {}
+        self.detection_history = []
+        self.transition_timers = {}
+        
+    def load_slots(self, slots_file: str, floor_name: str) -> bool:
+        """Load parking slots from JSON file"""
         try:
-            with open(json_path, 'r') as f:
-                data = json.load(f)
-            
-            parking_slots = []
-            
-            # Handle different JSON structures
-            if isinstance(data, list):
-                slots_data = data
-            elif 'slots' in data:
-                slots_data = data['slots']
-            elif 'parking_slots' in data:
-                slots_data = data['parking_slots']
-            else:
-                slots_data = [data]
-            
-            for i, slot in enumerate(slots_data):
-                try:
-                    # Extract coordinates
-                    points = None
-                    if isinstance(slot, list):
-                        points = slot
-                    elif 'points' in slot:
-                        points = slot['points']
-                    elif 'polygon' in slot:
-                        points = slot['polygon']
-                    elif 'coordinates' in slot:
-                        points = slot['coordinates']
-                    elif 'vertices' in slot:
-                        points = slot['vertices']
-                    
-                    if points is None:
-                        continue
-                    
-                    # Convert and validate polygon
-                    polygon = np.array(points, dtype=np.int32)
-                    if len(polygon.shape) == 1:
-                        polygon = polygon.reshape(-1, 2)
-                    
-                    # Calculate polygon properties
-                    area = cv2.contourArea(polygon)
-                    
-                    # Calculate center and bounding box
-                    M = cv2.moments(polygon)
-                    center = (int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])) if M['m00'] != 0 else (0, 0)
-                    
-                    x, y, w, h = cv2.boundingRect(polygon)
-                    
-                    slot_info = {
-                        'id': f"{floor_id}_S{slot.get('id', i + 1) if isinstance(slot, dict) else i + 1}",
-                        'floor': floor_id,
-                        'polygon': polygon,
-                        'area': area,
-                        'center': center,
-                        'bbox': (x, y, x + w, y + h),
+            if os.path.exists(slots_file):
+                with open(slots_file, 'r') as f:
+                    slots_data = json.load(f)
+                
+                # Convert to internal format
+                for slot_id, slot_info in slots_data.items():
+                    self.slots[f"{floor_name}_{slot_id}"] = {
+                        'id': slot_id,
+                        'floor': floor_name,
+                        'polygon': slot_info.get('coordinates', []),
                         'state': 'free',
                         'confidence': 0.0,
-                        'stable': True,
-                        'last_detection_frame': -1,
-                        'associated_car': None,
-                        'transition_start_frame': None,
-                        'previous_stable_state': 'free',
-                        'detection_history': []
+                        'last_detection': None,
+                        'transition_start': None
                     }
-                    parking_slots.append(slot_info)
-                    
-                except Exception as e:
-                    print(f"Error processing slot {i} on {floor_id}: {e}")
-                    continue
-            
-            print(f"Successfully loaded {len(parking_slots)} parking slots for {floor_id}")
-            return parking_slots
-            
+                return True
+            else:
+                # Create sample slots if file doesn't exist
+                self.create_sample_slots(floor_name)
+                return False
         except Exception as e:
-            print(f"Error loading parking slots from {json_path}: {e}")
-            return []
+            st.error(f"Error loading slots from {slots_file}: {str(e)}")
+            self.create_sample_slots(floor_name)
+            return False
     
-    def detect_cars(self, frame):
-        """Enhanced car detection with optimized performance"""
-        results = self.model(
-            frame, 
-            conf=self.detection_params['conf_threshold'],
-            iou=self.detection_params['iou_threshold'],
-            verbose=False
-        )
+    def create_sample_slots(self, floor_name: str):
+        """Create sample parking slots for demonstration"""
+        sample_slots = {}
         
-        car_detections = []
+        # Create 10 sample slots with different positions
+        for i in range(10):
+            slot_id = f"slot_{i+1:02d}"
+            # Create rectangular polygons at different positions
+            x = (i % 5) * 120 + 50
+            y = (i // 5) * 80 + 100
+            
+            sample_slots[f"{floor_name}_{slot_id}"] = {
+                'id': slot_id,
+                'floor': floor_name,
+                'polygon': [[x, y], [x+100, y], [x+100, y+60], [x, y+60]],
+                'state': 'free',
+                'confidence': 0.0,
+                'last_detection': None,
+                'transition_start': None
+            }
         
-        for result in results:
-            boxes = result.boxes
-            if boxes is not None:
-                for box in boxes:
-                    class_id = int(box.cls[0])
-                    confidence = float(box.conf[0])
-                    
-                    # Detect vehicles: car, motorcycle, bus, truck, bicycle
-                    vehicle_classes = [1, 2, 3, 5, 7]
-                    
-                    if class_id in vehicle_classes:
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                        
-                        width, height = x2 - x1, y2 - y1
-                        area = width * height
-                        
-                        if area >= self.detection_params['min_car_area'] and width > 20 and height > 20:
-                            car_detections.append({
-                                'bbox': [x1, y1, x2, y2],
-                                'confidence': confidence,
-                                'class_id': class_id,
-                                'area': area,
-                                'center': ((x1 + x2) // 2, (y1 + y2) // 2),
-                                'width': width,
-                                'height': height
-                            })
-        
-        return car_detections
+        self.slots.update(sample_slots)
     
-    def calculate_improved_overlap(self, car_bbox, slot):
-        """Improved overlap calculation"""
-        x1, y1, x2, y2 = car_bbox
-        car_center = ((x1 + x2) // 2, (y1 + y2) // 2)
-        slot_polygon = slot['polygon']
+    def point_in_polygon(self, point: Tuple[float, float], polygon: List[List[float]]) -> bool:
+        """Check if a point is inside a polygon"""
+        x, y = point
+        n = len(polygon)
+        inside = False
         
-        # Method 1: Intersection calculation
-        car_polygon = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
+        p1x, p1y = polygon[0]
+        for i in range(1, n + 1):
+            p2x, p2y = polygon[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
         
-        try:
-            intersection_result = cv2.intersectConvexConvex(car_polygon, slot_polygon)
-            if intersection_result[0] > 0 and intersection_result[1] is not None:
-                intersection_area = cv2.contourArea(intersection_result[1])
-                car_area = (x2 - x1) * (y2 - y1)
-                slot_area = slot['area']
-                
-                car_overlap = intersection_area / car_area if car_area > 0 else 0
-                slot_overlap = intersection_area / slot_area if slot_area > 0 else 0
-                intersection_score = max(car_overlap, slot_overlap)
-            else:
-                intersection_score = 0.0
-        except:
-            intersection_score = 0.0
-        
-        # Method 2: Center-based detection
-        distance = cv2.pointPolygonTest(slot_polygon, car_center, True)
-        
-        if distance >= 0:
-            max_distance = max(slot['bbox'][2] - slot['bbox'][0], slot['bbox'][3] - slot['bbox'][1]) / 2
-            center_score = min(1.0, (distance + 10) / max_distance) if max_distance > 0 else 1.0
-        else:
-            center_score = max(0.0, 1.0 + distance / 100.0)
-        
-        # Method 3: Bounding box overlap
-        slot_x1, slot_y1, slot_x2, slot_y2 = slot['bbox']
-        
-        overlap_x1 = max(x1, slot_x1)
-        overlap_y1 = max(y1, slot_y1)
-        overlap_x2 = min(x2, slot_x2)
-        overlap_y2 = min(y2, slot_y2)
-        
-        if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
-            overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
-            car_area = (x2 - x1) * (y2 - y1)
-            bbox_overlap = overlap_area / car_area if car_area > 0 else 0
-        else:
-            bbox_overlap = 0.0
-        
-        # Combine scores
-        final_score = (
-            intersection_score * 0.4 +
-            center_score * 0.4 +
-            bbox_overlap * 0.2
-        )
-        
-        return final_score
+        return inside
     
-    def match_cars_to_slots(self, car_detections, slots):
-        """Match cars to slots for a specific floor"""
-        slot_detections = []
-        used_cars = set()
+    def calculate_overlap(self, bbox: List[float], polygon: List[List[float]]) -> float:
+        """Calculate overlap between bounding box and polygon"""
+        x1, y1, x2, y2 = bbox
         
-        # Create car-slot pairs with scores
-        pairs = []
-        for car_idx, car in enumerate(car_detections):
-            for slot in slots:
-                overlap_score = self.calculate_improved_overlap(car['bbox'], slot)
-                if overlap_score >= self.detection_params['overlap_threshold']:
-                    pairs.append({
-                        'car_idx': car_idx,
-                        'slot_id': slot['id'],
-                        'score': overlap_score,
-                        'car': car,
-                        'slot': slot
-                    })
+        # Simple overlap calculation - check if bbox center is in polygon
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
         
-        pairs.sort(key=lambda x: x['score'], reverse=True)
-        used_slots = set()
+        if self.point_in_polygon((center_x, center_y), polygon):
+            return 0.8  # High overlap if center is inside
         
-        for pair in pairs:
-            if pair['car_idx'] not in used_cars and pair['slot_id'] not in used_slots:
-                slot_detections.append({
-                    'slot_id': pair['slot_id'],
-                    'car': pair['car'],
-                    'overlap_ratio': pair['score'],
-                    'is_occupied': pair['score'] >= self.detection_params['min_overlap_for_occupation']
-                })
-                used_cars.add(pair['car_idx'])
-                used_slots.add(pair['slot_id'])
+        # Check if any corner of bbox is inside polygon
+        corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        inside_count = sum(1 for corner in corners if self.point_in_polygon(corner, polygon))
         
-        return slot_detections
+        return inside_count / 4.0  # Return fraction of corners inside
     
-    def update_slot_status_with_transitions(self, slot_detections, slots):
-        """Update slot status with transition states"""
-        current_frame = self.frame_count
-        slot_detection_map = {d['slot_id']: d for d in slot_detections}
+    def update_slot_states(self, detections: List[Dict], floor_name: str):
+        """Update slot states based on detections"""
+        current_time = datetime.now()
         
-        for slot in slots:
-            slot_id = slot['id']
+        # Filter slots for current floor
+        floor_slots = {k: v for k, v in self.slots.items() if v['floor'] == floor_name}
+        
+        for slot_key, slot in floor_slots.items():
+            max_overlap = 0.0
+            best_confidence = 0.0
             
-            # Current detection status
-            current_detection = slot_detection_map.get(slot_id)
-            is_currently_occupied = bool(current_detection and current_detection['is_occupied'])
+            # Check all detections against this slot
+            for detection in detections:
+                if detection['confidence'] >= st.session_state.config['confidence_threshold']:
+                    overlap = self.calculate_overlap(detection['bbox'], slot['polygon'])
+                    if overlap > max_overlap:
+                        max_overlap = overlap
+                        best_confidence = detection['confidence']
             
-            # Add to detection history
-            slot['detection_history'].append(is_currently_occupied)
+            # Update slot state based on overlap
+            previous_state = slot['state']
             
-            # Keep only recent history (last 5 frames for stability check)
-            if len(slot['detection_history']) > 5:
-                slot['detection_history'] = slot['detection_history'][-5:]
-            
-            # Update associated car
-            slot['associated_car'] = current_detection['car'] if current_detection and is_currently_occupied else None
-            slot['confidence'] = current_detection['overlap_ratio'] if current_detection else 0.0
-            
-            current_state = slot['state']
-            
-            # Handle state transitions
-            if current_state == 'free':
-                if is_currently_occupied:
+            if max_overlap > 0.3:  # Vehicle detected
+                if previous_state == 'free':
                     slot['state'] = 'transition_to_occupied'
-                    slot['transition_start_frame'] = current_frame
-                    slot['stable'] = False
-                    
-            elif current_state == 'occupied':
-                if not is_currently_occupied:
+                    slot['transition_start'] = current_time
+                elif previous_state == 'transition_to_occupied':
+                    # Check if transition time has passed
+                    if (current_time - slot['transition_start']).seconds >= st.session_state.config['transition_time']:
+                        slot['state'] = 'occupied'
+                elif previous_state == 'transition_to_free':
+                    slot['state'] = 'transition_to_occupied'
+                    slot['transition_start'] = current_time
+                
+                slot['confidence'] = best_confidence
+                slot['last_detection'] = current_time
+            else:  # No vehicle detected
+                if previous_state == 'occupied':
                     slot['state'] = 'transition_to_free'
-                    slot['transition_start_frame'] = current_frame
-                    slot['stable'] = False
-                    
-            elif current_state == 'transition_to_occupied':
-                frames_in_transition = current_frame - slot.get('transition_start_frame', current_frame)
+                    slot['transition_start'] = current_time
+                elif previous_state == 'transition_to_free':
+                    # Check if transition time has passed
+                    if (current_time - slot['transition_start']).seconds >= st.session_state.config['transition_time']:
+                        slot['state'] = 'free'
+                elif previous_state == 'transition_to_occupied':
+                    slot['state'] = 'transition_to_free'
+                    slot['transition_start'] = current_time
                 
-                if frames_in_transition >= self.transition_frames:
-                    recent_occupied = sum(slot['detection_history'][-3:]) if len(slot['detection_history']) >= 3 else 0
-                    
-                    if recent_occupied >= 2:
-                        slot['state'] = 'occupied'
-                        slot['previous_stable_state'] = 'occupied'
-                        slot['stable'] = True
-                    else:
-                        slot['state'] = 'free'
-                        slot['previous_stable_state'] = 'free'
-                        slot['stable'] = True
-                else:
-                    if not is_currently_occupied and frames_in_transition > self.detection_params['fps'] * 2:
-                        slot['state'] = 'free'
-                        slot['stable'] = True
-                        
-            elif current_state == 'transition_to_free':
-                frames_in_transition = current_frame - slot.get('transition_start_frame', current_frame)
-                
-                if frames_in_transition >= self.transition_frames:
-                    recent_occupied = sum(slot['detection_history'][-3:]) if len(slot['detection_history']) >= 3 else 0
-                    
-                    if recent_occupied <= 1:
-                        slot['state'] = 'free'
-                        slot['previous_stable_state'] = 'free'
-                        slot['stable'] = True
-                    else:
-                        slot['state'] = 'occupied'
-                        slot['previous_stable_state'] = 'occupied'
-                        slot['stable'] = True
-                else:
-                    if is_currently_occupied and frames_in_transition > self.detection_params['fps'] * 2:
-                        slot['state'] = 'occupied'
-                        slot['stable'] = True
+                slot['confidence'] = 0.0
+            
+            # Update session state
+            self.slots[slot_key] = slot
     
-    def draw_floor_results(self, frame, car_detections, slots, floor_name):
-        """Draw results for a specific floor with transition states"""
-        result_frame = frame.copy()
+    def draw_slots_on_frame(self, frame: np.ndarray, floor_name: str) -> np.ndarray:
+        """Draw parking slots on frame with color coding"""
+        floor_slots = {k: v for k, v in self.slots.items() if v['floor'] == floor_name}
         
-        # Draw parking slots with transition colors
-        for slot in slots:
-            # Choose color and status based on state
+        for slot in floor_slots.values():
+            polygon = np.array(slot['polygon'], np.int32)
+            
+            # Color based on state
             if slot['state'] == 'free':
-                color = self.colors['free']
-                thickness = 3
-                status_text = "FREE"
+                color = (0, 255, 0)  # Green
             elif slot['state'] == 'occupied':
-                color = self.colors['occupied']
-                thickness = 4
-                status_text = "OCCUPIED"
-            elif slot['state'] in ['transition_to_occupied', 'transition_to_free']:
-                color = self.colors['transition']
-                thickness = 3
-                frames_passed = self.frame_count - slot.get('transition_start_frame', self.frame_count)
-                frames_remaining = max(0, self.transition_frames - frames_passed)
-                seconds_remaining = max(0, frames_remaining // self.detection_params['fps'])
-                
-                if slot['state'] == 'transition_to_occupied':
-                    status_text = f"PARKING ({seconds_remaining}s)"
-                else:
-                    status_text = f"LEAVING ({seconds_remaining}s)"
-            else:
-                color = self.colors['uncertain']
-                thickness = 2
-                status_text = "CHECKING"
+                color = (0, 0, 255)  # Red
+            else:  # Transition states
+                color = (0, 165, 255)  # Orange
             
-            # Draw polygon outline
-            cv2.polylines(result_frame, [slot['polygon']], True, color, thickness)
+            # Draw polygon
+            cv2.polylines(frame, [polygon], True, color, 2)
+            cv2.fillPoly(frame, [polygon], (*color, 30))  # Semi-transparent fill
             
-            # Semi-transparent fill
-            overlay = result_frame.copy()
-            cv2.fillPoly(overlay, [slot['polygon']], color)
-            cv2.addWeighted(result_frame, 0.85, overlay, 0.15, 0, result_frame)
-            
-            # Status text
-            center_x, center_y = slot['center']
-            slot_id = slot['id'].split('_')[-1]
-            
-            lines = [f"{slot_id}", f"{status_text}", f"({slot['confidence']:.2f})"]
-            
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.4
-            thickness = 1
-            
-            for i, line in enumerate(lines):
-                text_size = cv2.getTextSize(line, font, font_scale, thickness)[0]
-                text_x = center_x - text_size[0] // 2
-                text_y = center_y - 20 + i * 15
-                
-                # Text background
-                cv2.rectangle(result_frame,
-                            (text_x - 2, text_y - 12),
-                            (text_x + text_size[0] + 2, text_y + 2),
-                            self.colors['text_bg'], -1)
-                
-                # Text
-                cv2.putText(result_frame, line, (text_x, text_y),
-                          font, font_scale, self.colors['text'], thickness)
+            # Draw slot ID
+            center_x = int(np.mean([p[0] for p in polygon]))
+            center_y = int(np.mean([p[1] for p in polygon]))
+            cv2.putText(frame, slot['id'], (center_x-20, center_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # Draw car detections
-        class_names = {1: 'Bike', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'}
+        return frame
+    
+    def process_frame(self, frame: np.ndarray, floor_name: str) -> np.ndarray:
+        """Process a single frame"""
+        # Detect vehicles
+        detections = self.detector.detect(frame)
         
-        for car in car_detections:
-            x1, y1, x2, y2 = car['bbox']
-            confidence = car['confidence']
-            
-            cv2.rectangle(result_frame, (x1, y1), (x2, y2), self.colors['car_box'], 2)
-            
-            vehicle_name = class_names.get(car['class_id'], 'Vehicle')
-            label = f"{vehicle_name} {confidence:.2f}"
-            
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-            cv2.rectangle(result_frame,
-                        (x1, y1 - label_size[1] - 5),
-                        (x1 + label_size[0], y1),
-                        self.colors['car_box'], -1)
-            
-            cv2.putText(result_frame, label, (x1, y1 - 5),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+        # Update slot states
+        self.update_slot_states(detections, floor_name)
         
-        # Floor statistics
-        total_slots = len(slots)
-        free_slots = sum(1 for slot in slots if slot['state'] == 'free')
-        occupied_slots = sum(1 for slot in slots if slot['state'] == 'occupied')
-        transition_slots = sum(1 for slot in slots if slot['state'] in ['transition_to_occupied', 'transition_to_free'])
+        # Draw slots
+        processed_frame = self.draw_slots_on_frame(frame.copy(), floor_name)
         
-        # Statistics display
-        stats_height = 70
-        cv2.rectangle(result_frame, (10, 10), (550, stats_height), (0, 0, 0), -1)
+        # Draw detection boxes
+        for detection in detections:
+            if detection['confidence'] >= st.session_state.config['confidence_threshold']:
+                x1, y1, x2, y2 = detection['bbox']
+                cv2.rectangle(processed_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 255), 2)
+                cv2.putText(processed_frame, f"{detection['confidence']:.2f}", 
+                           (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
         
-        stats_lines = [
-            f"{floor_name} - Frame: {self.frame_count}",
-            f"Free: {free_slots} | Occupied: {occupied_slots} | Changing: {transition_slots}",
-            f"Cars: {len(car_detections)} | Total Slots: {total_slots}"
+        # Add statistics overlay
+        self.add_statistics_overlay(processed_frame, floor_name)
+        
+        return processed_frame
+    
+    def add_statistics_overlay(self, frame: np.ndarray, floor_name: str):
+        """Add statistics overlay to frame"""
+        floor_slots = {k: v for k, v in self.slots.items() if v['floor'] == floor_name}
+        
+        total = len(floor_slots)
+        free = sum(1 for slot in floor_slots.values() if slot['state'] == 'free')
+        occupied = sum(1 for slot in floor_slots.values() if slot['state'] == 'occupied')
+        transition = total - free - occupied
+        
+        # Draw background
+        cv2.rectangle(frame, (10, 10), (300, 120), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (300, 120), (255, 255, 255), 2)
+        
+        # Draw text
+        texts = [
+            f"Floor: {floor_name.title()}",
+            f"Total Slots: {total}",
+            f"Free: {free}",
+            f"Occupied: {occupied}",
+            f"Transitioning: {transition}"
         ]
         
-        for i, line in enumerate(stats_lines):
-            cv2.putText(result_frame, line,
-                      (15, 25 + i * 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                      self.colors['text'], 1)
+        for i, text in enumerate(texts):
+            cv2.putText(frame, text, (20, 30 + i*18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+def download_from_google_drive(file_id: str, destination: str) -> bool:
+    """Download file from Google Drive"""
+    try:
+        url = f"https://drive.google.com/uc?id={file_id}"
         
-        return result_frame
+        # Create progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(destination, 'wb') as file:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    file.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    if total_size > 0:
+                        progress = downloaded / total_size
+                        progress_bar.progress(progress)
+                        status_text.text(f"Downloaded: {downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
+        
+        progress_bar.progress(1.0)
+        status_text.text("Download completed!")
+        time.sleep(1)
+        progress_bar.empty()
+        status_text.empty()
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error downloading file: {str(e)}")
+        return False
+
+def create_sample_slots_file(filename: str, floor_name: str):
+    """Create a sample slots JSON file"""
+    slots = {}
     
-    def process_frame_dual(self, ground_frame, first_floor_frame):
-        """Process frames from both floors"""
-        self.frame_count += 1
+    # Create 10 sample slots
+    for i in range(10):
+        slot_id = f"slot_{i+1:02d}"
+        x = (i % 5) * 120 + 50
+        y = (i // 5) * 80 + 100
         
-        # Detect cars on both floors
-        ground_car_detections = self.detect_cars(ground_frame)
-        first_floor_car_detections = self.detect_cars(first_floor_frame)
-        
-        # Match cars to slots for each floor
-        ground_slot_detections = self.match_cars_to_slots(ground_car_detections, self.ground_floor_slots)
-        first_floor_slot_detections = self.match_cars_to_slots(first_floor_car_detections, self.first_floor_slots)
-        
-        # Update slot statuses with transition logic
-        self.update_slot_status_with_transitions(ground_slot_detections, self.ground_floor_slots)
-        self.update_slot_status_with_transitions(first_floor_slot_detections, self.first_floor_slots)
-        
-        # Draw results
-        ground_result = self.draw_floor_results(ground_frame, ground_car_detections, self.ground_floor_slots, "Ground Floor")
-        first_floor_result = self.draw_floor_results(first_floor_frame, first_floor_car_detections, self.first_floor_slots, "1st Floor")
-        
-        return ground_result, first_floor_result
-    
-    def download_video_if_needed(self, video_path, file_id):
-        """Download large video files from Google Drive if they don't exist locally"""
-        if os.path.exists(video_path):
-            file_size = os.path.getsize(video_path)
-            if file_size > 1024:  # File exists and is not empty
-                return True
-            else:
-                # Remove corrupted file
-                os.remove(video_path)
-        
-        try:
-            import urllib.request
-            import urllib.parse
-            import re
-            
-            print(f"Downloading {video_path} from Google Drive...")
-            
-            # Handle large files that require confirmation
-            session_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            
-            # First request to get the confirmation token for large files
-            response = urllib.request.urlopen(session_url)
-            content = response.read().decode('utf-8')
-            
-            # Look for the confirmation token
-            confirm_token = None
-            if 'confirm=' in content:
-                token_match = re.search(r'confirm=([a-zA-Z0-9_-]+)', content)
-                if token_match:
-                    confirm_token = token_match.group(1)
-            
-            # Download URL with confirmation token if needed
-            if confirm_token:
-                download_url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
-                print("Large file detected, using confirmation token...")
-            else:
-                download_url = session_url
-            
-            urllib.request.urlretrieve(download_url, video_path)
-            
-            # Verify download
-            if os.path.exists(video_path) and os.path.getsize(video_path) > 1024:
-                file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
-                print(f"Downloaded {video_path} successfully ({file_size_mb:.1f}MB)")
-                return True
-            else:
-                print(f"Download failed: {video_path} is too small or corrupted")
-                return False
-                
-        except Exception as e:
-            print(f"Error downloading {video_path}: {e}")
-            return False
-    
-    def start_detection(self):
-        """Start video detection with automatic video download and better error handling"""
-        if self.is_running:
-            return True
-            
-        # Google Drive file IDs for your videos
-        video_files = {
-            'parking1.mp4': '1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE',  # Ground floor
-            'parking2.mp4': '14njmPC4b81mOV02orKslziMRr2WL-qAM'   # First floor
+        slots[slot_id] = {
+            "coordinates": [[x, y], [x+100, y], [x+100, y+60], [x, y+60]],
+            "floor": floor_name,
+            "type": "standard"
         }
+    
+    with open(filename, 'w') as f:
+        json.dump(slots, f, indent=2)
+
+def generate_mock_historical_data() -> pd.DataFrame:
+    """Generate mock historical data for analytics"""
+    dates = pd.date_range(start=datetime.now() - timedelta(days=7), end=datetime.now(), freq='H')
+    
+    data = []
+    for date in dates:
+        # Simulate occupancy patterns (higher during day, lower at night)
+        hour = date.hour
+        base_occupancy = 0.3 + 0.4 * np.sin((hour - 6) * np.pi / 12) if 6 <= hour <= 18 else 0.1
         
-        # Download and verify videos if they don't exist or are corrupted
-        for video_file, file_id in video_files.items():
-            if not os.path.exists(video_file) or os.path.getsize(video_file) <= 1024:
-                print(f"Downloading {video_file}...")
-                if os.path.exists(video_file):
-                    os.remove(video_file)  # Remove corrupted file
-                if not self.download_video_if_needed(video_file, file_id):
-                    print(f"Failed to download {video_file}")
-                    return False
+        ground_floor_occupied = max(0, min(10, int(10 * base_occupancy + np.random.normal(0, 2))))
+        first_floor_occupied = max(0, min(10, int(10 * base_occupancy + np.random.normal(0, 2))))
         
-        # Verify files exist and have reasonable size
-        if not os.path.exists(self.ground_video) or os.path.getsize(self.ground_video) <= 1024:
-            print(f"Ground floor video {self.ground_video} is missing or corrupted")
-            return False
-            
-        if not os.path.exists(self.first_floor_video) or os.path.getsize(self.first_floor_video) <= 1024:
-            print(f"First floor video {self.first_floor_video} is missing or corrupted")
-            return False
+        data.append({
+            'timestamp': date,
+            'ground_floor_total': 10,
+            'ground_floor_occupied': ground_floor_occupied,
+            'ground_floor_free': 10 - ground_floor_occupied,
+            'first_floor_total': 10,
+            'first_floor_occupied': first_floor_occupied,
+            'first_floor_free': 10 - first_floor_occupied,
+            'total_occupied': ground_floor_occupied + first_floor_occupied,
+            'total_free': (10 - ground_floor_occupied) + (10 - first_floor_occupied)
+        })
+    
+    return pd.DataFrame(data)
+
+# Page Functions
+def show_header():
+    """Display the main header"""
+    st.markdown("""
+    <div class="main-header">
+        <h1>🚗 Multi-Floor Parking Detection System</h1>
+        <p>Real-time parking space monitoring using AI-powered computer vision</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+def show_sidebar_status():
+    """Show system status in sidebar"""
+    st.sidebar.markdown("### System Status")
+    
+    # System status
+    if st.session_state.detection_active:
+        status_color = "🟢"
+        status_text = "ACTIVE"
+    else:
+        status_color = "🔴"
+        status_text = "INACTIVE"
+    
+    st.sidebar.markdown(f"""
+    <div class="sidebar-status">
+        <h4>{status_color} Detection Status: {status_text}</h4>
+        <p><strong>Last Update:</strong> {st.session_state.last_update.strftime('%H:%M:%S')}</p>
+        <p><strong>Total Slots:</strong> {st.session_state.total_slots}</p>
+        <p><strong>Free Slots:</strong> {st.session_state.free_slots}</p>
+        <p><strong>Occupied Slots:</strong> {st.session_state.occupied_slots}</p>
+        <p><strong>Transitioning:</strong> {st.session_state.transition_slots}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Emergency stop
+    if st.session_state.detection_active:
+        if st.sidebar.button("🛑 Emergency Stop", type="secondary"):
+            st.session_state.detection_active = False
+            st.session_state.stop_detection = True
+            st.rerun()
+
+def configuration_page():
+    """Configuration page"""
+    st.header("⚙️ System Configuration")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Video Files")
         
-        try:
-            self.cap_ground = cv2.VideoCapture(self.ground_video)
-            self.cap_first = cv2.VideoCapture(self.first_floor_video)
+        # Ground floor video
+        ground_video_path = st.text_input("Ground Floor Video Path", 
+                                         value=st.session_state.config['ground_floor_video'])
+        
+        if st.button("📥 Download Ground Floor Video"):
+            if download_from_google_drive("1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE", ground_video_path):
+                st.success("Ground floor video downloaded successfully!")
+            else:
+                st.error("Failed to download ground floor video")
+        
+        # First floor video
+        first_video_path = st.text_input("First Floor Video Path", 
+                                        value=st.session_state.config['first_floor_video'])
+        
+        if st.button("📥 Download First Floor Video"):
+            if download_from_google_drive("14njmPC4b81mOV02orKslziMRr2WL-qAM", first_video_path):
+                st.success("First floor video downloaded successfully!")
+            else:
+                st.error("Failed to download first floor video")
+        
+        # Check file status
+        st.subheader("File Status")
+        files_to_check = [
+            (ground_video_path, "Ground Floor Video"),
+            (first_video_path, "First Floor Video"),
+            (st.session_state.config['ground_floor_slots'], "Ground Floor Slots"),
+            (st.session_state.config['first_floor_slots'], "First Floor Slots")
+        ]
+        
+        for file_path, description in files_to_check:
+            if os.path.exists(file_path):
+                st.success(f"✅ {description}: Found")
+            else:
+                st.error(f"❌ {description}: Missing")
+    
+    with col2:
+        st.subheader("Slot Configuration Files")
+        
+        ground_slots_path = st.text_input("Ground Floor Slots JSON", 
+                                         value=st.session_state.config['ground_floor_slots'])
+        
+        if st.button("📝 Create Sample Ground Floor Slots"):
+            create_sample_slots_file(ground_slots_path, "ground_floor")
+            st.success("Sample ground floor slots file created!")
+        
+        first_slots_path = st.text_input("First Floor Slots JSON", 
+                                        value=st.session_state.config['first_floor_slots'])
+        
+        if st.button("📝 Create Sample First Floor Slots"):
+            create_sample_slots_file(first_slots_path, "first_floor")
+            st.success("Sample first floor slots file created!")
+        
+        st.subheader("AI Model Settings")
+        
+        confidence_threshold = st.slider("Detection Confidence Threshold", 
+                                        0.0, 1.0, 
+                                        st.session_state.config['confidence_threshold'], 
+                                        0.05)
+        
+        transition_time = st.number_input("Transition Time (seconds)", 
+                                        min_value=1, max_value=60, 
+                                        value=st.session_state.config['transition_time'])
+        
+        if st.button("💾 Save Configuration"):
+            st.session_state.config.update({
+                'ground_floor_video': ground_video_path,
+                'first_floor_video': first_video_path,
+                'ground_floor_slots': ground_slots_path,
+                'first_floor_slots': first_slots_path,
+                'confidence_threshold': confidence_threshold,
+                'transition_time': transition_time
+            })
+            st.success("Configuration saved successfully!")
+    
+    st.subheader("System Control")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🚀 Start Detection", disabled=st.session_state.detection_active):
+            # Initialize detector
+            detector = MultiFloorParkingDetector()
+            detector.load_slots(st.session_state.config['ground_floor_slots'], 'ground_floor')
+            detector.load_slots(st.session_state.config['first_floor_slots'], 'first_floor')
             
-            if not self.cap_ground.isOpened():
-                print(f"Error: Cannot open ground floor video {self.ground_video}")
-                return False
-                
-            if not self.cap_first.isOpened():
-                print(f"Error: Cannot open first floor video {self.first_floor_video}")
-                self.cap_ground.release()
-                return False
+            st.session_state.detection_active = True
+            st.session_state.stop_detection = False
+            st.success("Detection started!")
+            st.rerun()
+    
+    with col2:
+        if st.button("⏹️ Stop Detection", disabled=not st.session_state.detection_active):
+            st.session_state.detection_active = False
+            st.session_state.stop_detection = True
+            st.success("Detection stopped!")
+            st.rerun()
+    
+    with col3:
+        if st.button("🔄 Reset System"):
+            for key in ['detection_active', 'ground_floor_slots', 'first_floor_slots', 
+                       'detection_history', 'video_threads', 'frame_queues']:
+                if key in st.session_state:
+                    if key == 'detection_active':
+                        st.session_state[key] = False
+                    elif key in ['ground_floor_slots', 'first_floor_slots', 'video_threads', 'frame_queues']:
+                        st.session_state[key] = {}
+                    elif key == 'detection_history':
+                        st.session_state[key] = []
+            st.success("System reset!")
+            st.rerun()
+
+def live_dashboard_page():
+    """Live dashboard page"""
+    st.header("📹 Live Dashboard")
+    
+    if not st.session_state.detection_active:
+        st.warning("⚠️ Detection system is not active. Please start it from the Configuration page.")
+        return
+    
+    # Statistics cards
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3>{st.session_state.total_slots}</h3>
+            <p>Total Slots</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+            <h3>{st.session_state.free_slots}</h3>
+            <p>Free Slots</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card" style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);">
+            <h3>{st.session_state.occupied_slots}</h3>
+            <p>Occupied Slots</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card" style="background: linear-gradient(135deg, #ffc107 0%, #fd7e14 100%);">
+            <h3>{st.session_state.transition_slots}</h3>
+            <p>Transitioning</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Video displays
+    st.subheader("Live Video Feeds")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### Ground Floor")
+        video_placeholder1 = st.empty()
+        
+        # Mock video display
+        with video_placeholder1.container():
+            st.markdown('<div class="video-container">', unsafe_allow_html=True)
+            st.info("🎥 Ground Floor Live Feed\n\nVideo processing would display here in production mode.")
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("### First Floor")
+        video_placeholder2 = st.empty()
+        
+        # Mock video display
+        with video_placeholder2.container():
+            st.markdown('<div class="video-container">', unsafe_allow_html=True)
+            st.info("🎥 First Floor Live Feed\n\nVideo processing would display here in production mode.")
+            st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Auto-refresh
+    if st.button("🔄 Refresh Status"):
+        st.rerun()
+
+def analytics_page():
+    """Analytics page"""
+    st.header("📊 Analytics Dashboard")
+    
+    # Generate mock data
+    df = generate_mock_historical_data()
+    
+    # Time range selector
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime.now().date() - timedelta(days=7))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.now().date())
+    
+    # Filter data
+    df_filtered = df[(df['timestamp'].dt.date >= start_date) & (df['timestamp'].dt.date <= end_date)]
+    
+    # Overall statistics
+    st.subheader("📈 Occupancy Overview")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        avg_occupancy = df_filtered['total_occupied'].mean()
+        st.metric("Average Occupancy", f"{avg_occupancy:.1f} slots", f"{(avg_occupancy/20)*100:.1f}%")
+    
+    with col2:
+        peak_occupancy = df_filtered['total_occupied'].max()
+        st.metric("Peak Occupancy", f"{peak_occupancy} slots", f"{(peak_occupancy/20)*100:.1f}%")
+    
+    with col3:
+        current_occupancy = df_filtered['total_occupied'].iloc[-1] if not df_filtered.empty else 0
+        st.metric("Current Occupancy", f"{current_occupancy} slots", f"{(current_occupancy/20)*100:.1f}%")
+    
+    # Occupancy trend chart
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Total Occupancy Trend', 'Floor Comparison', 
+                       'Occupancy Distribution', 'Hourly Patterns'),
+        specs=[[{"secondary_y": True}, {"type": "bar"}],
+               [{"type": "histogram"}, {"type": "heatmap"}]]
+    )
+    
+    # Total occupancy trend
+    fig.add_trace(
+        go.Scatter(x=df_filtered['timestamp'], y=df_filtered['total_occupied'],
+                  mode='lines', name='Occupied', line=dict(color='red')),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=df_filtered['timestamp'], y=df_filtered['total_free'],
+                  mode='lines', name='Free', line=dict(color='green')),
+        row=1, col=1
+    )
+    
+    # Floor comparison
+    floor_comparison = pd.DataFrame({
+        'Ground Floor': [df_filtered['ground_floor_occupied'].mean(), df_filtered['ground_floor_free'].mean()],
+        'First Floor': [df_filtered['first_floor_occupied'].mean(), df_filtered['first_floor_free'].mean()]
+    }, index=['Occupied', 'Free'])
+    
+    fig.add_trace(
+        go.Bar(x=['Ground Floor', 'First Floor'], y=floor_comparison.loc['Occupied'],
+               name='Avg Occupied', marker_color='red'),
+        row=1, col=2
+    )
+    fig.add_trace(
+        go.Bar(x=['Ground Floor', 'First Floor'], y=floor_comparison.loc['Free'],
+               name='Avg Free', marker_color='green'),
+        row=1, col=2
+    )
+    
+    # Occupancy distribution
+    fig.add_trace(
+        go.Histogram(x=df_filtered['total_occupied'], nbinsx=10,
+                    name='Occupancy Distribution', marker_color='blue'),
+        row=2, col=1
+    )
+    
+    # Hourly patterns
+    df_filtered['hour'] = df_filtered['timestamp'].dt.hour
+    hourly_avg = df_filtered.groupby('hour')['total_occupied'].mean().reset_index()
+    
+    # Create heatmap data
+    days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    hours = list(range(24))
+    
+    # Generate sample heatmap data
+    heatmap_data = np.random.rand(7, 24) * 20
+    
+    fig.add_trace(
+        go.Heatmap(z=heatmap_data, x=hours, y=days,
+                  colorscale='RdYlGn_r', name='Hourly Heatmap'),
+        row=2, col=2
+    )
+    
+    fig.update_layout(height=800, showlegend=True, title_text="Parking Analytics Dashboard")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Detailed statistics table
+    st.subheader("📋 Detailed Statistics")
+    
+    # Daily summary
+    daily_summary = df_filtered.groupby(df_filtered['timestamp'].dt.date).agg({
+        'total_occupied': ['mean', 'max', 'min'],
+        'ground_floor_occupied': 'mean',
+        'first_floor_occupied': 'mean'
+    }).round(2)
+    
+    daily_summary.columns = ['Avg Occupied', 'Peak Occupied', 'Min Occupied', 
+                           'Ground Floor Avg', 'First Floor Avg']
+    
+    st.dataframe(daily_summary, use_container_width=True)
+
+def detailed_slots_page():
+    """Detailed slots information page"""
+    st.header("🅿️ Detailed Slot Information")
+    
+    # Floor filter
+    floor_filter = st.selectbox("Select Floor", ["All", "Ground Floor", "First Floor"])
+    
+    # Mock slot data for display
+    slots_data = []
+    
+    # Generate sample slot data
+    for floor in ['ground_floor', 'first_floor']:
+        for i in range(10):
+            slot_id = f"slot_{i+1:02d}"
+            state = np.random.choice(['free', 'occupied', 'transition_to_occupied', 'transition_to_free'], 
+                                   p=[0.4, 0.4, 0.1, 0.1])
+            confidence = np.random.uniform(0.0, 1.0) if state == 'occupied' else 0.0
             
-            # Test read a frame to ensure videos are readable
-            ret1, _ = self.cap_ground.read()
-            ret2, _ = self.cap_first.read()
+            # Simulate transition timer
+            transition_time = np.random.randint(0, 10) if 'transition' in state else 0
             
-            if not ret1 or not ret2:
-                print("Error: Cannot read frames from video files")
-                self.cap_ground.release()
-                self.cap_first.release()
-                return False
-            
-            # Reset to beginning
-            self.cap_ground.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.cap_first.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            slots_data.append({
+                'Slot ID': slot_id,
+                'Floor': floor.replace('_', ' ').title(),
+                'Status': state.replace('_', ' ').title(),
+                'Confidence': f"{confidence:.2f}",
+                'Transition Timer': f"{transition_time}s" if transition_time > 0 else "-",
+                'Last Detection': datetime.now() - timedelta(seconds=np.random.randint(0, 300))
+            })
+    
+    df_slots = pd.DataFrame(slots_data)
+    
+    # Apply floor filter
+    if floor_filter != "All":
+        df_slots = df_slots[df_slots['Floor'] == floor_filter]
+    
+    # Status filter
+    status_filter = st.multiselect(
+        "Filter by Status",
+        options=['Free', 'Occupied', 'Transition To Occupied', 'Transition To Free'],
+        default=['Free', 'Occupied', 'Transition To Occupied', 'Transition To Free']
+    )
+    
+    if status_filter:
+        df_slots = df_slots[df_slots['Status'].isin(status_filter)]
+    
+    # Statistics summary
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_slots = len(df_slots)
+        st.metric("Total Slots", total_slots)
+    
+    with col2:
+        free_slots = len(df_slots[df_slots['Status'] == 'Free'])
+        st.metric("Free Slots", free_slots, f"{(free_slots/total_slots*100):.1f}%" if total_slots > 0 else "0%")
+    
+    with col3:
+        occupied_slots = len(df_slots[df_slots['Status'] == 'Occupied'])
+        st.metric("Occupied Slots", occupied_slots, f"{(occupied_slots/total_slots*100):.1f}%" if total_slots > 0 else "0%")
+    
+    with col4:
+        transition_slots = len(df_slots[df_slots['Status'].str.contains('Transition')])
+        st.metric("Transitioning", transition_slots, f"{(transition_slots/total_slots*100):.1f}%" if total_slots > 0 else "0%")
+    
+    # Slots table with color coding
+    st.subheader("Slot Details")
+    
+    def color_status(val):
+        if val == 'Free':
+            return 'background-color: #d4edda; color: #155724'
+        elif val == 'Occupied':
+            return 'background-color: #f8d7da; color: #721c24'
+        elif 'Transition' in val:
+            return 'background-color: #fff3cd; color: #856404'
+        return ''
+    
+    styled_df = df_slots.style.applymap(color_status, subset=['Status'])
+    st.dataframe(styled_df, use_container_width=True)
+    
+    # Export functionality
+    if st.button("📊 Export Data"):
+        csv = df_slots.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"parking_slots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+
+def setup_guide_page():
+    """Setup guide page"""
+    st.header("📖 Setup Guide")
+    
+    st.markdown("""
+    ## 🚀 Complete Installation Guide
+    
+    This guide will help you set up the Multi-Floor Parking Detection System for production use.
+    """)
+    
+    # Installation tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["🏠 Local Setup", "☁️ Streamlit Cloud", "🐳 Docker", "🔧 Troubleshooting"])
+    
+    with tab1:
+        st.subheader("Local Development Setup")
+        
+        st.markdown("""
+        ### Prerequisites
+        - Python 3.8 or higher
+        - pip package manager
+        - Git (optional, for cloning)
+        
+        ### Step 1: Install Dependencies
+        ```bash
+        pip install streamlit opencv-python ultralytics numpy pandas plotly requests
+        ```
+        
+        ### Step 2: Download Required Files
+        The system requires two main video files and slot configuration files:
+        
+        **Video Files:**
+        - Ground Floor: Use the download button in Configuration page
+        - First Floor: Use the download button in Configuration page
+        
+        **Slot Configuration Files:**
+        - `slots1.json` - Ground floor parking slots
+        - `slots2.json` - First floor parking slots
+        
+        ### Step 3: File Structure
+        ```
+        parking-detection/
+        ├── app.py                 # Main Streamlit app
+        ├── parking1.mp4          # Ground floor video
+        ├── parking2.mp4          # First floor video
+        ├── slots1.json           # Ground floor slots
+        ├── slots2.json           # First floor slots
+        └── requirements.txt      # Dependencies
+        ```
+        
+        ### Step 4: Run the Application
+        ```bash
+        streamlit run app.py
+        ```
+        
+        The application will be available at `http://localhost:8501`
+        """)
+    
+    with tab2:
+        st.subheader("Streamlit Cloud Deployment")
+        
+        st.markdown("""
+        ### Prerequisites
+        - GitHub account
+        - Streamlit Cloud account (free)
+        
+        ### Step 1: Prepare Repository
+        1. Create a GitHub repository
+        2. Upload the application code (without large video files)
+        3. Include `requirements.txt` with all dependencies
+        
+        ### Step 2: Requirements.txt
+        ```txt
+        streamlit==1.28.0
+        opencv-python-headless==4.8.1.78
+        ultralytics==8.0.196
+        numpy==1.24.3
+        pandas==2.0.3
+        plotly==5.15.0
+        requests==2.31.0
+        ```
+        
+        ### Step 3: Deploy to Streamlit Cloud
+        1. Go to [share.streamlit.io](https://share.streamlit.io)
+        2. Connect your GitHub repository
+        3. Select the main branch and app.py file
+        4. Click "Deploy"
+        
+        ### Step 4: Configure Large Files
+        Since video files are large, use the Google Drive download feature:
+        - The app will automatically download videos when needed
+        - No need to include large files in the repository
+        
+        ### Important Notes
+        - Streamlit Cloud has resource limitations
+        - For production use, consider upgrading to Streamlit Cloud Pro
+        - Large video processing may require local deployment
+        """)
+    
+    with tab3:
+        st.subheader("Docker Deployment")
+        
+        st.markdown("""
+        ### Dockerfile
+        ```dockerfile
+        FROM python:3.9-slim
+        
+        # Install system dependencies
+        RUN apt-get update && apt-get install -y \\
+            libglib2.0-0 \\
+            libsm6 \\
+            libxext6 \\
+            libxrender-dev \\
+            libgomp1 \\
+            libglib2.0-0 \\
+            libgtk-3-dev \\
+            && rm -rf /var/lib/apt/lists/*
+        
+        # Set working directory
+        WORKDIR /app
+        
+        # Copy requirements and install
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        
+        # Copy application code
+        COPY . .
+        
+        # Expose port
+        EXPOSE 8501
+        
+        # Run streamlit
+        CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+        ```
+        
+        ### Build and Run
+        ```bash
+        # Build the image
+        docker build -t parking-detection .
+        
+        # Run the container
+        docker run -p 8501:8501 parking-detection
+        ```
+        
+        ### Docker Compose (Optional)
+        ```yaml
+        version: '3.8'
+        services:
+          parking-detection:
+            build: .
+            ports:
+              - "8501:8501"
+            volumes:
+              - ./data:/app/data
+            environment:
+              - STREAMLIT_SERVER_PORT=8501
+        ```
+        """)
+    
+    with tab4:
+        st.subheader("Troubleshooting")
+        
+        st.markdown("""
+        ### Common Issues and Solutions
+        
+        #### 🔴 Video Files Not Found
+        **Problem:** Application shows "Video file not found" error
+        
+        **Solutions:**
+        - Use the download buttons in Configuration page
+        - Check file paths in configuration
+        - Ensure files are in the correct directory
+        
+        #### 🔴 YOLO Model Loading Issues
+        **Problem:** YOLO model fails to load or detect objects
+        
+        **Solutions:**
+        - Check internet connection (model downloads automatically)
+        - Verify ultralytics installation: `pip install ultralytics`
+        - For offline use, download model manually
+        
+        #### 🔴 OpenCV Issues
+        **Problem:** Video processing errors or display issues
+        
+        **Solutions:**
+        - Install opencv-python-headless for cloud deployment
+        - For local use: `pip install opencv-python`
+        - Check video file format (MP4 recommended)
+        
+        #### 🔴 Memory Issues
+        **Problem:** Application crashes or runs slowly
+        
+        **Solutions:**
+        - Reduce video resolution
+        - Adjust frame processing rate
+        - Use smaller video files for testing
+        - Consider upgrading hosting resources
+        
+        #### 🔴 Streamlit Cloud Limitations
+        **Problem:** App exceeds resource limits
+        
+        **Solutions:**
+        - Optimize code for efficiency
+        - Reduce concurrent video processing
+        - Use local deployment for heavy processing
+        - Consider Streamlit Cloud Pro
+        
+        ### Performance Optimization Tips
+        
+        1. **Video Processing:**
+           - Skip frames for faster processing
+           - Use lower resolution videos
+           - Implement frame caching
+        
+        2. **Detection Optimization:**
+           - Adjust confidence threshold
+           - Use region of interest (ROI)
+           - Batch process detections
+        
+        3. **Memory Management:**
+           - Clear unused variables
+           - Use generators for large datasets
+           - Implement proper garbage collection
+        
+        ### Getting Help
+        
+        If you encounter issues not covered here:
+        - Check the GitHub repository for updates
+        - Review Streamlit documentation
+        - Check YOLO/Ultralytics documentation
+        - Contact support team
+        """)
+    
+    # System requirements
+    st.subheader("📋 System Requirements")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **Minimum Requirements:**
+        - CPU: 2 cores, 2.0 GHz
+        - RAM: 4 GB
+        - Storage: 2 GB free space
+        - Python: 3.8+
+        - Internet: Required for model download
+        """)
+    
+    with col2:
+        st.markdown("""
+        **Recommended Requirements:**
+        - CPU: 4+ cores, 3.0 GHz
+        - RAM: 8+ GB
+        - GPU: NVIDIA GPU (optional, for faster processing)
+        - Storage: 10+ GB free space
+        - Python: 3.9+
+        - Internet: High-speed connection
+        """)
+
+def main():
+    """Main application function"""
+    # Initialize session state
+    initialize_session_state()
+    
+    # Show header
+    show_header()
+    
+    # Sidebar navigation
+    st.sidebar.title("Navigation")
+    
+    pages = {
+        "⚙️ Configuration": configuration_page,
+        "📹 Live Dashboard": live_dashboard_page,
+        "📊 Analytics": analytics_page,
+        "🅿️ Detailed Slots": detailed_slots_page,
+        "📖 Setup Guide": setup_guide_page
+    }
+    
+    selected_page = st.sidebar.selectbox("Select Page", list(pages.keys()))
+    
+    # Show sidebar status
+    show_sidebar_status()
+    
+    # Update session state statistics (mock data for demo)
+    if st.session_state.detection_active:
+        # Simulate real-time updates
+        st.session_state.total_slots = 20
+        st.session_state.free_slots = np.random.randint(8, 15)
+        st.session_state.occupied_slots = np.random.randint(5, 12)
+        st.session_state.transition_slots = st.session_state.total_slots - st.session_state.free_slots - st.session_state.occupied_slots
+        st.session_state.last_update = datetime.now()
+    
+    # Display selected page
+    pages[selected_page]()
+    
+    # Auto-refresh for live pages
+    if selected_page == "📹 Live Dashboard" and st.session_state.detection_active:
+        time.sleep(1)
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
