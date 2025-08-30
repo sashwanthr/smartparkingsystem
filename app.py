@@ -1299,4 +1299,5 @@ st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.8rem;'>
     🚗 Smart Parking Management System | Multi-Floor Detection with AI
 </div>
-""", unsafe_allow_html=True)data)} parking slots")
+
+
