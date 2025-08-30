@@ -1,25 +1,57 @@
-import cv2
-import json
-import numpy as np
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import time
-import random
-from datetime import datetime, timedelta
-import threading
-import queue
-from pathlib import Path
-import tempfile
-import os
-from typing import Dict, List, Tuple, Optional
-import base64
-import subprocess
-import shutil
 import streamlit as st
-from ultralytics import YOLO
-from collections import defaultdict
+import sys
+import subprocess
+
+# Handle OpenCV import with fallback
+try:
+    import cv2
+except ImportError:
+    st.error("OpenCV is not installed. Installing now...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
+        import cv2
+        st.success("OpenCV installed successfully!")
+    except Exception as e:
+        st.error(f"Failed to install OpenCV: {e}")
+        st.stop()
+
+# Now import other dependencies
+try:
+    import json
+    import numpy as np
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import time
+    import random
+    from datetime import datetime, timedelta
+    import threading
+    import queue
+    from pathlib import Path
+    import tempfile
+    import os
+    from typing import Dict, List, Tuple, Optional
+    import base64
+    import subprocess
+    import shutil
+    from collections import defaultdict
+except ImportError as e:
+    st.error(f"Missing dependency: {e}")
+    st.stop()
+
+# Handle YOLO import
+try:
+    from ultralytics import YOLO
+except ImportError:
+    st.error("YOLO (ultralytics) is not installed. Installing now...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "ultralytics"])
+        from ultralytics import YOLO
+        st.success("YOLO installed successfully!")
+    except Exception as e:
+        st.error(f"Failed to install YOLO: {e}")
+        st.stop()
 
 # Page configuration
 st.set_page_config(
@@ -718,13 +750,13 @@ def setup_parking_videos():
 def show_config_page():
     st.markdown("""
     <h1 class="main-header">
-        <span style='font-size: 2rem;'>🚗</span> Smart Parking Management System
+        Smart Parking Management System
     </h1>
     """, unsafe_allow_html=True)
     
     st.markdown("Configure your multi-floor parking detection system with real video files and slot layouts.")
 
-    st.subheader("🎥 Video Configuration")
+    st.subheader("Video Configuration")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -774,54 +806,54 @@ def show_config_page():
                     st.success("All videos downloaded successfully!")
                     st.rerun()
 
-    st.subheader("📍 Slot Configuration")
+    st.subheader("Slot Configuration")
     
     col3, col4 = st.columns(2)
     with col3:
         st.write("**Ground Floor Slots**")
         ground_slots = st.text_input("Ground Floor Slots JSON", value="slots1.json", key="ground_slots")
         if os.path.exists(ground_slots):
-            st.success(f"✅ Found: {ground_slots}")
+            st.success(f"Found: {ground_slots}")
             # Show slot count
             try:
                 with open(ground_slots, 'r') as f:
                     slots_data = json.load(f)
-                st.info(f"📊 Loaded {len(slots_data)} parking slots")
+                st.info(f"Loaded {len(slots_data)} parking slots")
             except:
-                st.warning("⚠️ Could not read slot data")
+                st.warning("Could not read slot data")
         else:
-            st.error(f"❌ File not found: {ground_slots}")
+            st.error(f"File not found: {ground_slots}")
             
     with col4:
         st.write("**First Floor Slots**")
         first_slots = st.text_input("First Floor Slots JSON", value="slots2.json", key="first_slots")
         if os.path.exists(first_slots):
-            st.success(f"✅ Found: {first_slots}")
+            st.success(f"Found: {first_slots}")
             # Show slot count
             try:
                 with open(first_slots, 'r') as f:
                     slots_data = json.load(f)
-                st.info(f"📊 Loaded {len(slots_data)} parking slots")
+                st.info(f"Loaded {len(slots_data)} parking slots")
             except:
-                st.warning("⚠️ Could not read slot data")
+                st.warning("Could not read slot data")
         else:
-            st.error(f"❌ File not found: {first_slots}")
+            st.error(f"File not found: {first_slots}")
 
-    st.subheader("🤖 AI Model Settings")
+    st.subheader("AI Model Settings")
     
     col5, col6 = st.columns(2)
     with col5:
         model_path = st.text_input("YOLO Model Path", value="yolov8n.pt", key="model_path")
         if os.path.exists(model_path):
-            st.success(f"✅ Found: {model_path}")
+            st.success(f"Found: {model_path}")
         else:
-            st.error(f"❌ Model not found: {model_path}")
+            st.error(f"Model not found: {model_path}")
         
     with col6:
         confidence = st.slider("Confidence Threshold", 0.1, 1.0, 0.5, 0.05, key="confidence")
         transition_time = st.slider("Transition Time (seconds)", 5, 30, 10, 1, key="transition_time")
         
-    st.subheader("🎮 System Control")
+    st.subheader("System Control")
     
     # Check if all files exist
     files_exist = all([
@@ -834,7 +866,7 @@ def show_config_page():
     
     col7, col8, col9 = st.columns(3)
     with col7:
-        if st.button("🚀 Start Detection", use_container_width=True, disabled=not files_exist):
+        if st.button("Start Detection", use_container_width=True, disabled=not files_exist):
             if files_exist:
                 try:
                     # Initialize detector with user settings
@@ -862,7 +894,7 @@ def show_config_page():
                 st.error("Please ensure all files exist before starting detection!")
     
     with col8:
-        if st.button("🛑 Stop Detection", use_container_width=True):
+        if st.button("Stop Detection", use_container_width=True):
             if st.session_state.detector:
                 st.session_state.detector.stop_detection()
             st.session_state.is_running = False
@@ -870,7 +902,7 @@ def show_config_page():
             st.rerun()
     
     with col9:
-        if st.button("🔄 Reset System", use_container_width=True):
+        if st.button("Reset System", use_container_width=True):
             if st.session_state.detector:
                 st.session_state.detector.stop_detection()
             st.session_state.is_running = False
@@ -879,10 +911,10 @@ def show_config_page():
             st.rerun()
     
     if not files_exist:
-        st.warning("⚠️ Please ensure all required files are in your project directory before starting detection.")
+        st.warning("Please ensure all required files are in your project directory before starting detection.")
         
         st.markdown("""
-        ### 📁 Required File Structure:
+        ### Required File Structure:
         ```
         your_project_folder/
         ├── app.py (this file)
@@ -897,7 +929,7 @@ def show_config_page():
 def show_live_dashboard():
     st.markdown("""
     <h1 class="main-header">
-        <span style='font-size: 2rem;'>📹</span> Live Multi-Floor Detection
+        Live Multi-Floor Detection
     </h1>
     """, unsafe_allow_html=True)
     
@@ -908,10 +940,10 @@ def show_live_dashboard():
     # Control buttons
     col_control1, col_control2, col_control3 = st.columns([1, 1, 2])
     with col_control1:
-        if st.button("⏸️ Pause", use_container_width=True):
+        if st.button("Pause", use_container_width=True):
             st.session_state.is_running = False
     with col_control2:
-        if st.button("🛑 Stop", use_container_width=True):
+        if st.button("Stop", use_container_width=True):
             st.session_state.detector.stop_detection()
             st.session_state.is_running = False
             st.session_state.page = 'Configuration'
@@ -936,14 +968,14 @@ def show_live_dashboard():
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🏢 First Floor")
+        st.subheader("First Floor")
         first_floor_placeholder = st.empty()
         
         if st.session_state.detector:
             st.markdown(f"**Total:** {stats['first_floor']['total']} | **Free:** {stats['first_floor']['free']} | **Occupied:** {stats['first_floor']['occupied']}")
     
     with col2:
-        st.subheader("🏗️ Ground Floor") 
+        st.subheader("Ground Floor") 
         ground_floor_placeholder = st.empty()
         
         if st.session_state.detector:
@@ -951,8 +983,6 @@ def show_live_dashboard():
     
     # Detection loop
     if st.session_state.is_running and st.session_state.detector:
-        frame_container = st.container()
-        
         # Process frames
         try:
             ret, ground_frame, first_floor_frame = st.session_state.detector.get_next_frames()
@@ -983,7 +1013,7 @@ def show_live_dashboard():
 def show_detailed_slots():
     st.markdown("""
     <h1 class="main-header">
-        <span style='font-size: 2rem;'>🔍</span> Detailed Slot Information
+        Detailed Slot Information
     </h1>
     """, unsafe_allow_html=True)
     
@@ -1044,7 +1074,7 @@ def show_detailed_slots():
     st.dataframe(df, use_container_width=True)
     
     # Refresh button
-    if st.button("🔄 Refresh Data"):
+    if st.button("Refresh Data"):
         st.rerun()
 
 def generate_historical_data(detector=None):
@@ -1078,7 +1108,7 @@ def generate_historical_data(detector=None):
 def show_analytics_page():
     st.markdown("""
     <h1 class="main-header">
-        <span style='font-size: 2rem;'>📈</span> Parking Analytics
+        Parking Analytics
     </h1>
     """, unsafe_allow_html=True)
     
@@ -1089,7 +1119,7 @@ def show_analytics_page():
     if st.session_state.detector and st.session_state.is_running:
         current_stats = st.session_state.detector.get_parking_statistics()
         
-        st.subheader("📊 Current Status")
+        st.subheader("Current Status")
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -1111,7 +1141,7 @@ def show_analytics_page():
             st.metric("Available", current_stats['total']['free'])
     
     # Historical charts
-    st.subheader("📈 Historical Trends")
+    st.subheader("Historical Trends")
     
     # Occupancy rate over time
     fig1 = px.area(
@@ -1153,13 +1183,13 @@ def show_analytics_page():
     st.plotly_chart(fig2, use_container_width=True)
     
     # Data table
-    st.subheader("📋 Historical Data")
+    st.subheader("Historical Data")
     st.dataframe(historical_df.set_index('Timestamp').tail(12), use_container_width=True)
 
 def show_setup_guide():
     st.markdown("""
     <h1 class="main-header">
-        <span style='font-size: 2rem;'>📖</span> Setup Guide
+        Setup Guide
     </h1>
     """, unsafe_allow_html=True)
     
@@ -1175,15 +1205,12 @@ def show_setup_guide():
     ├── slots1.json              # Ground floor parking slots
     ├── slots2.json              # First floor parking slots
     ├── requirements.txt         # Python dependencies
+    ├── packages.txt             # System dependencies
     └── README.md                # Setup instructions
     ```
     
     ### Video Files (External Storage)
-    Your video files are hosted on Google Drive:
-    - **Ground Floor:** https://drive.google.com/file/d/1yVBgp07Z8FfLzw5dd0SxW61zd1l55kjE/view
-    - **First Floor:** https://drive.google.com/file/d/14njmPC4b81mOV02orKslziMRr2WL-qAM/view
-    
-    The app will automatically download these videos when needed.
+    Your video files are hosted on Google Drive and will download automatically.
     
     ### Installation Steps
     
@@ -1191,56 +1218,38 @@ def show_setup_guide():
     ```txt
     streamlit>=1.28.0
     ultralytics>=8.0.0
-    opencv-python>=4.8.0
+    opencv-python-headless>=4.8.0
     pandas>=2.0.0
     plotly>=5.15.0
     numpy>=1.24.0
+    Pillow>=9.0.0
+    torch>=2.0.0
+    torchvision>=0.15.0
     ```
     
-    **2. Deploy to Streamlit Cloud:**
+    **2. Create packages.txt:**
+    ```txt
+    libgl1-mesa-glx
+    libglib2.0-0
+    libsm6
+    libxext6
+    libxrender-dev
+    libgomp1
+    ```
+    
+    **3. Deploy to Streamlit Cloud:**
     1. Push code to GitHub (without video files)
     2. Connect repository to Streamlit Cloud
     3. Deploy directly from GitHub
     4. Videos download automatically on first use
     
-    **3. Local Development:**
+    **4. Local Development:**
     ```bash
     git clone your-repo-url
     cd your-repo
     pip install -r requirements.txt
     streamlit run app.py
     ```
-    
-    ### Deployment Workflow
-    
-    **For Users Worldwide:**
-    1. User opens your Streamlit Cloud URL
-    2. Clicks "Download All Videos" (one-time setup)
-    3. Videos download from Google Drive automatically
-    4. Clicks "Start Detection" to begin real-time analysis
-    5. System processes your actual parking lot videos with AI detection
-    
-    ### Alternative Deployment Methods
-    
-    **Option 1: Docker with External Storage**
-    ```dockerfile
-    FROM python:3.9-slim
-    WORKDIR /app
-    COPY . .
-    RUN pip install -r requirements.txt
-    EXPOSE 8501
-    CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-    ```
-    
-    **Option 2: AWS/GCP with S3/Cloud Storage**
-    - Upload videos to S3/Google Cloud Storage
-    - Modify app to download from cloud storage
-    - Deploy container to cloud platform
-    
-    **Option 3: CDN Hosting**
-    - Host videos on CDN (CloudFlare, AWS CloudFront)
-    - Update download URLs in the app
-    - Faster global access for users
     """)
     
     # File checker section
@@ -1265,7 +1274,7 @@ def show_setup_guide():
 
 # --- Sidebar Navigation ---
 with st.sidebar:
-    st.markdown("## 🧭 Navigation")
+    st.markdown("## Navigation")
     
     if st.session_state.is_running:
         page_options = ["Live Dashboard", "Analytics", "Detailed Slots", "Setup Guide", "Configuration"]
@@ -1277,19 +1286,19 @@ with st.sidebar:
     
     # System status
     st.markdown("---")
-    st.markdown("## 📊 System Status")
+    st.markdown("## System Status")
     if st.session_state.is_running:
-        st.success("🟢 Detection Running")
+        st.success("Detection Running")
         if st.session_state.detector:
             stats = st.session_state.detector.get_parking_statistics()
             st.metric("Frame", st.session_state.detector.frame_count)
             st.metric("Total Occupancy", f"{(stats['total']['occupied']/stats['total']['total']*100):.1f}%")
     else:
-        st.error("🔴 Detection Stopped")
+        st.error("Detection Stopped")
     
     # Emergency stop
     st.markdown("---")
-    if st.button("🚨 Emergency Stop", use_container_width=True, key="emergency_stop"):
+    if st.button("Emergency Stop", use_container_width=True, key="emergency_stop"):
         if st.session_state.detector:
             st.session_state.detector.stop_detection()
         st.session_state.is_running = False
@@ -1312,6 +1321,6 @@ elif st.session_state.page == "Setup Guide":
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.8rem;'>
-    🚗 Smart Parking Management System | Multi-Floor Detection with AI
+    Smart Parking Management System | Multi-Floor Detection with AI
 </div>
 """, unsafe_allow_html=True)
