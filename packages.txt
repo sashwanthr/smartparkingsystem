@@ -1,2 +1,10 @@
 libgl1
 libglib2.0-0
+libgl1-mesa-dev
+libgles2-mesa-dev
+freeglut3-dev
+libglib2.0-0
+libsm6
+libxext6
+libxrender-dev
+libgomp1
